@@ -665,6 +665,12 @@ dc_status_t open_ble_device_with_identification(device_data_t **out_data,
         return rc;
     }
     
+    // Skip retry if name-based detection resolves to the same config we already tried
+    if (stored_family != DC_FAMILY_NULL && family == stored_family && model == stored_model) {
+        free(data);
+        return DC_STATUS_IO;
+    }
+    
     rc = open_ble_device(data, address, family, model);
     if (rc != DC_STATUS_SUCCESS) {
         free(data);

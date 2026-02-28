@@ -149,14 +149,18 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         peripheral.discoverServices(nil)
         
-        // Wait for characteristics with timeout
+        // Wait for characteristics with timeout.
+        // CoreBluetooth callbacks are delivered on the main queue, so we
+        // must not block the main thread here.  Use Thread.sleep so the
+        // main thread stays free to process callbacks when this is called
+        // from a background thread.
         let timeout = Date(timeIntervalSinceNow: 5.0)
         while writeCharacteristic == nil || notifyCharacteristic == nil {
             if Date() > timeout {
                 logError("Timeout waiting for service discovery")
                 return false
             }
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            Thread.sleep(forTimeInterval: 0.05)
         }
         
         return writeCharacteristic != nil && notifyCharacteristic != nil
@@ -178,14 +182,16 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         peripheral.setNotifyValue(true, for: notifyCharacteristic)
         
-        // Wait for notifications to be enabled with timeout
+        // Wait for notifications to be enabled with timeout.
+        // Use Thread.sleep instead of RunLoop so the main thread stays
+        // free to process CoreBluetooth callbacks.
         let timeout = Date(timeIntervalSinceNow: 5.0)
         while !notifyCharacteristic.isNotifying {
             if Date() > timeout {
                 logError("Timeout waiting for notifications to enable")
                 return false
             }
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            Thread.sleep(forTimeInterval: 0.05)
         }
         
         return notifyCharacteristic.isNotifying
@@ -443,10 +449,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         logInfo("Successfully connected to \(peripheral.name ?? "Unknown Device")")
         peripheral.delegate = self
-        DispatchQueue.main.async {
-            self.isPeripheralReady = true
-            self.connectedDevice = peripheral
-        }
+        // Set isPeripheralReady synchronously so that callers busy-waiting on
+        // this flag (e.g. connectToBLEDevice in BLEBridge.m) see it immediately
+        // when the RunLoop processes this callback.  The @Published wrapper will
+        // still notify SwiftUI/Combine observers on the main thread.
+        self.isPeripheralReady = true
+        self.connectedDevice = peripheral
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
