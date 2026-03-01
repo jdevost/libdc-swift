@@ -42,6 +42,7 @@ static inline uint32_t array_uint32_be(const unsigned char array[]) {
 // BLE object
 typedef struct ble_object {
     void* manager;
+    int timeout_ms; // Timeout in milliseconds, -1 means no timeout (wait forever)
 } ble_object_t;
 
 // BLE object functions

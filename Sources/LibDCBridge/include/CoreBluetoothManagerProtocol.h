@@ -12,6 +12,7 @@
 - (BOOL)enableNotifications;
 - (BOOL)writeData:(NSData *)data;
 - (NSData *)readDataPartial:(int)requested;
+- (void)setTimeout:(int)timeoutMs;
 - (void)close;
 @end
 

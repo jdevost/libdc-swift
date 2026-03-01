@@ -12,6 +12,7 @@ void initializeBLEManager(void) {
 ble_object_t* createBLEObject(void) {
     ble_object_t* obj = malloc(sizeof(ble_object_t));
     obj->manager = (__bridge void *)bleManager;
+    obj->timeout_ms = -1; // Default: no timeout (wait forever)
     return obj;
 }
 
@@ -90,6 +91,20 @@ bool enableNotifications(ble_object_t *io) {
 }
 
 dc_status_t ble_set_timeout(ble_object_t *io, int timeout) {
+    if (!io) return DC_STATUS_INVALIDARGS;
+
+    int old_timeout = io->timeout_ms;
+    io->timeout_ms = timeout;
+
+    // Forward timeout to the Swift BLEManager so readDataPartial uses it
+    Class CoreBluetoothManagerClass = NSClassFromString(@"CoreBluetoothManager");
+    id<CoreBluetoothManagerProtocol> manager = [CoreBluetoothManagerClass shared];
+    [manager setTimeout:timeout];
+
+    if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
+        NSLog(@"[BLE TIMEOUT] set_timeout: %d ms -> %d ms", old_timeout, timeout);
+    }
+
     return DC_STATUS_SUCCESS;
 }
 

@@ -274,8 +274,13 @@ import LibDCBridge
                 )
             }
 
+            let handoffStart = Date()
             DispatchQueue.main.async {
                 if let manager = CoreBluetoothManager.shared() as? CoreBluetoothManager {
+                    let handoffDelay = Date().timeIntervalSince(handoffStart)
+                    if Logger.shared.isDebugMode {
+                        logDebug("[HANDOFF] openBLEDevice -> main queue: setting openedDeviceDataPtr after \(String(format: "%.3f", handoffDelay))s")
+                    }
                     manager.openedDeviceDataPtr = data
                     manager.isConnecting = false // Clear connecting flag on success
                 }

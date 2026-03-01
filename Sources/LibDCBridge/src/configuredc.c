@@ -142,8 +142,9 @@ static dc_status_t ble_iostream_create(dc_iostream_t **out, dc_context_t *contex
  *------------------------------------------------------------------*/
 static dc_status_t ble_stream_set_timeout(dc_iostream_t *iostream, int timeout)
 {
-    // Uncomment to debug timeout changes, usually too verbose
-    // printf("DC_IO [TIMEOUT] Setting to %d ms\n", timeout);
+    if (is_io_debug_enabled()) {
+        printf("[DC_IO TIMEOUT] libdivecomputer requesting timeout: %d ms\n", timeout);
+    }
     ble_stream_t *s = (ble_stream_t *) iostream;
     return ble_set_timeout(s->ble_object, timeout);
 }

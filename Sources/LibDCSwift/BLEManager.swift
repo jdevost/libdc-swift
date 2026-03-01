@@ -68,14 +68,16 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     @Published private var deviceDataPtrChanged = false
 
     // MARK: - Private Properties
-    @objc private var timeout: Int = -1 // default to no timeout
+    private var bleTimeoutMs: Int = -1 // Timeout in ms, -1 means no timeout (use default 3s)
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
     private var receivedData: Data = Data()
     private let queue = DispatchQueue(label: "com.blemanager.queue")
     private let dataAvailableSemaphore = DispatchSemaphore(value: 0) // Signals when new data arrives
+    private let writeReadySemaphore = DispatchSemaphore(value: 0) // Signals when peripheral is ready for next write-without-response
     private let frameMarker: UInt8 = 0x7E
     private var _deviceDataPtr: UnsafeMutablePointer<device_data_t>?
+    private let deviceDataPtrLock = NSLock() // Protects _deviceDataPtr for cross-thread access
     private var connectionCompletion: ((Bool) -> Void)?
     private var totalBytesReceived: Int = 0
     private var lastDataReceived: Date?
@@ -84,13 +86,20 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     private var pendingOperations: [() -> Void] = []
     
     // MARK: - Public Properties
-    public var openedDeviceDataPtr: UnsafeMutablePointer<device_data_t>? { // Public access to device data pointer with change notification
+    /// Thread-safe access to device data pointer with change notification.
+    /// This property is set from the main queue (by openBLEDevice) and read from
+    /// background threads (e.g. the polling loop in BluetoothScannerView).
+    public var openedDeviceDataPtr: UnsafeMutablePointer<device_data_t>? {
         get {
-            _deviceDataPtr
+            deviceDataPtrLock.lock()
+            defer { deviceDataPtrLock.unlock() }
+            return _deviceDataPtr
         }
         set {
-            objectWillChange.send()
+            deviceDataPtrLock.lock()
             _deviceDataPtr = newValue
+            deviceDataPtrLock.unlock()
+            objectWillChange.send()
         }
     }
     
@@ -134,6 +143,15 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         return self.isPeripheralReady
     }
     
+    @objc(setTimeout:)
+    public func setTimeout(_ timeoutMs: Int32) {
+        let old = self.bleTimeoutMs
+        self.bleTimeoutMs = Int(timeoutMs)
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE TIMEOUT] Swift setTimeout: \(old) ms -> \(self.bleTimeoutMs) ms")
+        }
+    }
+    
     @objc(discoverServices)
     public func discoverServices() -> Bool {
         guard let peripheral = self.peripheral else {
@@ -147,6 +165,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return false
         }
         
+        let startTime = Date()
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE DISCOVER] Starting service discovery on thread: \(Thread.isMainThread ? "main" : "background") for \(peripheral.name ?? "unknown")")
+        }
+        
         peripheral.discoverServices(nil)
         
         // Wait for characteristics with timeout.
@@ -157,10 +180,18 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         let timeout = Date(timeIntervalSinceNow: 5.0)
         while writeCharacteristic == nil || notifyCharacteristic == nil {
             if Date() > timeout {
-                logError("Timeout waiting for service discovery")
+                logError("Timeout waiting for service discovery (5s)")
+                if Logger.shared.isDebugMode {
+                    logDebug("[BLE DISCOVER] writeChar=\(writeCharacteristic != nil), notifyChar=\(notifyCharacteristic != nil)")
+                }
                 return false
             }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+        
+        if Logger.shared.isDebugMode {
+            let elapsed = Date().timeIntervalSince(startTime)
+            logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil"), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
         }
         
         return writeCharacteristic != nil && notifyCharacteristic != nil
@@ -180,6 +211,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return false
         }
         
+        let startTime = Date()
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE NOTIFY] Enabling notifications on thread: \(Thread.isMainThread ? "main" : "background"), characteristic: \(notifyCharacteristic.uuid.uuidString)")
+        }
+        
         peripheral.setNotifyValue(true, for: notifyCharacteristic)
         
         // Wait for notifications to be enabled with timeout.
@@ -188,10 +224,15 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         let timeout = Date(timeIntervalSinceNow: 5.0)
         while !notifyCharacteristic.isNotifying {
             if Date() > timeout {
-                logError("Timeout waiting for notifications to enable")
+                logError("Timeout waiting for notifications to enable (5s)")
                 return false
             }
             Thread.sleep(forTimeInterval: 0.05)
+        }
+        
+        if Logger.shared.isDebugMode {
+            let elapsed = Date().timeIntervalSince(startTime)
+            logDebug("[BLE NOTIFY] Enabled in \(String(format: "%.2f", elapsed))s")
         }
         
         return notifyCharacteristic.isNotifying
@@ -225,16 +266,57 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     @objc public func write(_ data: Data!) -> Bool {
         guard let peripheral = self.peripheral,
               let characteristic = self.writeCharacteristic else { return false }
-        peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+
+        // If using write-without-response, wait until the peripheral is ready
+        // to accept more data to avoid silently dropping packets.
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            // Wait up to 5s for the transmit buffer to have space
+            let deadline = Date(timeIntervalSinceNow: 5.0)
+            while !peripheral.canSendWriteWithoutResponse {
+                if Date() > deadline {
+                    logError("[BLE WRITE] Timeout waiting for canSendWriteWithoutResponse (5s)")
+                    return false
+                }
+                // Wait for peripheralIsReady(toSendWriteWithoutResponse:) callback
+                let result = writeReadySemaphore.wait(timeout: .now() + .milliseconds(100))
+                if result == .timedOut {
+                    // Check again
+                    continue
+                }
+            }
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE WRITE] canSendWriteWithoutResponse=true, writing \(data?.count ?? 0) bytes")
+            }
+            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+        } else {
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        }
         return true
     }
     
     @objc public func readDataPartial(_ requested: Int32) -> Data? {
         let requestedInt = Int(requested)
         let startTime = Date()
-        let timeout: TimeInterval = 3.0
+        // Use the timeout set by libdivecomputer via ble_set_timeout.
+        // If timeout is -1 (no timeout set), default to 3s for safety.
+        // If timeout is 0, it means "poll" — return immediately if no data.
+        let effectiveTimeoutMs = self.bleTimeoutMs
+        let timeoutInterval: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
 
-        while Date().timeIntervalSince(startTime) < timeout {
+        if effectiveTimeoutMs == 0 {
+            // Poll mode: check once and return immediately
+            var outData: Data?
+            queue.sync {
+                if !receivedData.isEmpty {
+                    let amount = min(requestedInt, receivedData.count)
+                    outData = receivedData.prefix(amount)
+                    receivedData.removeSubrange(0..<amount)
+                }
+            }
+            return outData
+        }
+
+        while Date().timeIntervalSince(startTime) < timeoutInterval {
             var outData: Data?
 
             queue.sync {
@@ -257,17 +339,24 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             }
         }
 
-        // Timeout - no data received within 3 seconds
+        // Timeout - no data received within the configured timeout
         if Logger.shared.isDebugMode {
             let peripheralState = peripheral?.state.rawValue ?? -1
-            logDebug("readDataPartial timeout after 3s (requested \(requestedInt) bytes, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
+            logDebug("readDataPartial timeout after \(String(format: "%.1f", timeoutInterval))s (requested \(requestedInt) bytes, configured timeout: \(effectiveTimeoutMs) ms, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
         }
         return nil
     }
     
     // MARK: - Device Management
     @objc public func close(clearDevicePtr: Bool = false) {
+        let closeStartTime = Date()
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE CLOSE] Starting close(clearDevicePtr: \(clearDevicePtr)) on thread: \(Thread.isMainThread ? "main" : "background"), peripheral: \(peripheral?.name ?? "nil"), state: \(peripheral?.state.rawValue ?? -1)")
+        }
+        
         isDisconnecting = true
+        // Reset timeout to default for next connection
+        self.bleTimeoutMs = -1
         DispatchQueue.main.async {
             self.isPeripheralReady = false
             self.connectedDevice = nil
@@ -284,6 +373,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         }
         dataAvailableSemaphore.signal() // Signal once to unblock any waiting read
 
+        // Also drain write-ready semaphore to unblock any waiting writes
+        while writeReadySemaphore.wait(timeout: .now()) == .success { }
+        writeReadySemaphore.signal()
+
         if clearDevicePtr {
             if let devicePtr = self.openedDeviceDataPtr {
                 if devicePtr.pointee.device != nil {
@@ -299,6 +392,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             self.notifyCharacteristic = nil
             self.peripheral = nil
             centralManager.cancelPeripheralConnection(peripheral)
+        }
+        
+        if Logger.shared.isDebugMode {
+            let elapsed = Date().timeIntervalSince(closeStartTime)
+            logDebug("[BLE CLOSE] Completed in \(String(format: "%.3f", elapsed))s")
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -478,6 +576,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logError("Disconnect error: \(error.localizedDescription)")
         }
         
+        if Logger.shared.isDebugMode {
+            logDebug("[DISCONNECT] Full state: isDisconnecting=\(isDisconnecting), isRetrievingLogs=\(isRetrievingLogs), isConnecting=\(isConnecting), hasDeviceDataPtr=\(openedDeviceDataPtr != nil), peripheralState=\(peripheral.state.rawValue), error=\(error?.localizedDescription ?? "none")")
+        }
+        
         DispatchQueue.main.async {
             self.isPeripheralReady = false
             self.connectedDevice = nil
@@ -563,7 +665,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             
             if isReadCharacteristic(characteristic) {
                 notifyCharacteristic = characteristic
-                peripheral.setNotifyValue(true, for: characteristic)
+                // Note: Do NOT call setNotifyValue here — enableNotifications()
+                // is called separately by connectToBLEDevice (BLEBridge.m) after
+                // service discovery completes. Subscribing twice can confuse some
+                // BLE stacks (e.g. Shearwater).
             }
         }
     }
@@ -599,6 +704,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if let error = error {
             logError("Error changing notification state: \(error.localizedDescription)")
         }
+    }
+
+    public func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        // Signal any write() call waiting on canSendWriteWithoutResponse
+        writeReadySemaphore.signal()
     }
 
     // MARK: - Private Helpers
