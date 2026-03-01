@@ -319,7 +319,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return false
         }
         
-        self.peripheral = peripheral
+        if Thread.isMainThread {
+            self.peripheral = peripheral
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.peripheral = peripheral
+            }
+        }
         peripheral.delegate = self
         centralManager.connect(peripheral, options: nil)
         return true  // Return immediately, connection status will be handled by delegate
