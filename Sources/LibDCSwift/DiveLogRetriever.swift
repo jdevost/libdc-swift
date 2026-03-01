@@ -180,11 +180,20 @@ public class DiveLogRetriever {
         
         if let serialStr = serial.map({ String(cString: $0) }),
            let typeStr = deviceType.map({ String(cString: $0) }) {
+            
+            if Logger.shared.isDebugMode {
+                logDebug("[FINGERPRINT-LOOKUP] deviceType=\"\(typeStr)\", serial=\"\(serialStr)\"")
+            }
              
              if let fingerprint = viewModel.getFingerprint(forDeviceType: typeStr, serial: serialStr) {
                 // Sanity check: Shearwater fingerprints should be exactly 4 bytes
                 if fingerprint.count != 4 {
                     logWarning("⚠️ Fingerprint size mismatch! Expected 4 bytes, got \(fingerprint.count)")
+                }
+
+                if Logger.shared.isDebugMode {
+                    let hexStr = fingerprint.map { String(format: "%02x", $0) }.joined()
+                    logDebug("[FINGERPRINT-LOOKUP] Returning stored fingerprint: \(hexStr) (\(fingerprint.count) bytes)")
                 }
 
                 size.pointee = fingerprint.count
@@ -195,6 +204,9 @@ public class DiveLogRetriever {
                 // No stored fingerprint - return a sentinel value (0xFFFFFFFF) that won't match any real dive
                 // This is necessary because libdivecomputer defaults to 0x00000000 if no fingerprint is set,
                 // which could accidentally match a dive with fingerprint 0x00000000 and stop enumeration
+                if Logger.shared.isDebugMode {
+                    logDebug("[FINGERPRINT-LOOKUP] No stored fingerprint found, returning sentinel 0xFFFFFFFF")
+                }
                 let sentinelFingerprint: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF]
                 size.pointee = sentinelFingerprint.count
                 let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: sentinelFingerprint.count)
@@ -269,6 +281,24 @@ public class DiveLogRetriever {
                 
                 devicePtr.pointee.fingerprint_context = Unmanaged.passUnretained(viewModel).toOpaque()
                 devicePtr.pointee.lookup_fingerprint = fingerprintLookup
+                
+                // Pre-foreach connection state dump (debug mode only)
+                if Logger.shared.isDebugMode {
+                    let peripheralState: String
+                    switch device.state {
+                    case .disconnected:  peripheralState = "disconnected"
+                    case .connecting:    peripheralState = "connecting"
+                    case .connected:     peripheralState = "connected"
+                    case .disconnecting: peripheralState = "disconnecting"
+                    @unknown default:    peripheralState = "unknown(\(device.state.rawValue))"
+                    }
+                    let hasDevinfo = devicePtr.pointee.have_devinfo != 0
+                    let dcDevicePtr = String(describing: dcDevice)
+                    logDebug("[PRE-FOREACH] peripheral state: \(peripheralState), dcDevice ptr: \(dcDevicePtr), have_devinfo: \(hasDevinfo), storedFingerprint: \(storedFingerprint?.map { String(format: "%02x", $0) }.joined() ?? "nil"), isRetrievingLogs: \(bluetoothManager.isRetrievingLogs)")
+                    if hasDevinfo {
+                        logDebug("[PRE-FOREACH] devinfo serial: \(String(format: "%08x", devicePtr.pointee.devinfo.serial)), model: \(devicePtr.pointee.devinfo.model)")
+                    }
+                }
                 
                 let enumStatus = dc_device_foreach(dcDevice, diveCallbackClosure, contextPtr)
 

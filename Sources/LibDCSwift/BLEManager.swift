@@ -257,6 +257,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             }
         }
 
+        // Timeout - no data received within 3 seconds
+        if Logger.shared.isDebugMode {
+            let peripheralState = peripheral?.state.rawValue ?? -1
+            logDebug("readDataPartial timeout after 3s (requested \(requestedInt) bytes, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
+        }
         return nil
     }
     
@@ -492,6 +497,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 }
             } else if self.isRetrievingLogs {
                 logWarning("⚠️ Disconnected during download - NOT auto-reconnecting to avoid race condition")
+                if Logger.shared.isDebugMode {
+                    logDebug("[DISCONNECT] During active retrieval - this will cause DC_STATUS_IO/PROTOCOL errors. currentRetrievalDevice: \(self.currentRetrievalDevice?.name ?? "nil"), error: \(error?.localizedDescription ?? "none")")
+                }
             } else if self.isConnecting {
                 logWarning("⚠️ Disconnected during connection attempt - NOT auto-reconnecting")
             }

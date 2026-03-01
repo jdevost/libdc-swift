@@ -93,14 +93,24 @@ static const dc_iostream_vtable_t ble_iostream_vtable = {
 };
 
 /*--------------------------------------------------------------------
- * Helper to print hex dumps for debugging
+ * Helper to check if debug-level I/O tracing is active
+ *------------------------------------------------------------------*/
+static inline bool is_io_debug_enabled(void) {
+    return g_libdc_loglevel >= DC_LOGLEVEL_DEBUG;
+}
+
+/*--------------------------------------------------------------------
+ * Helper to print hex dumps for debugging (only when debug enabled)
  *------------------------------------------------------------------*/
 static void debug_hexdump(const char *prefix, const void *data, size_t size) {
+    if (!is_io_debug_enabled()) return;
     const unsigned char *p = (const unsigned char *)data;
-    printf("DC_IO [%s] (%zu bytes): ", prefix, size);
-    for (size_t i = 0; i < size; i++) {
+    printf("[DC_IO %s] (%zu bytes): ", prefix, size);
+    size_t limit = size > 64 ? 64 : size;
+    for (size_t i = 0; i < limit; i++) {
         printf("%02X ", p[i]);
     }
+    if (size > 64) printf("... (%zu more)", size - 64);
     printf("\n");
 }
 
@@ -146,33 +156,14 @@ static dc_status_t ble_stream_read(dc_iostream_t *iostream, void *data, size_t s
     ble_stream_t *s = (ble_stream_t *) iostream;
     dc_status_t rc = ble_read(s->ble_object, data, size, actual);
 
-    if (rc == DC_STATUS_SUCCESS && actual && *actual > 0) {
-        // printf("DC_IO [READ_DEBUG] Requested: %zu, Received: %zu, Transport: %d\n",
-        //        size, *actual, iostream->transport);
-        // debug_hexdump("READ", data, *actual);
-
-        // For BLE transport, show what would be processed after skipping header
-        if (iostream->transport == DC_TRANSPORT_BLE && *actual >= 2) {
-            // printf("DC_IO [READ_DEBUG] After BLE header skip (first 2 bytes):\n");
-            // debug_hexdump("READ_AFTER_SKIP", (unsigned char*)data + 2, *actual - 2);
-
-            // Show the expected packet structure
-            unsigned char *packet = (unsigned char*)data;
-            if (*actual >= 6) {
-                // printf("DC_IO [READ_DEBUG] BLE Header: [0]=0x%02X [1]=0x%02X\n", packet[0], packet[1]);
-                // printf("DC_IO [READ_DEBUG] SLIP Packet: [2]=0x%02X [3]=0x%02X [4]=0x%02X [5]=0x%02X\n",
-                //        packet[2], packet[3], packet[4], packet[5]);
-
-                // If this looks like a response packet (starts with 01 FF at offset 2)
-                if (packet[2] == 0x01 && packet[3] == 0xFF && *actual >= 7) {
-                    unsigned int length = packet[4];
-                    // printf("DC_IO [READ_DEBUG] Length field: 0x%02X (%u decimal)\n", length, length);
-                    // printf("DC_IO [READ_DEBUG] Expected total size: %u (length-1+4) = %u\n",
-                    //        length, length - 1 + 4);
-                    // printf("DC_IO [READ_DEBUG] Actual size after BLE skip: %zu\n", *actual - 2);
-                    // printf("DC_IO [READ_DEBUG] Difference: %zd bytes\n", (*actual - 2) - (length - 1 + 4));
-                }
-            }
+    if (rc != DC_STATUS_SUCCESS) {
+        // Always log read errors - these are critical for diagnosing protocol failures
+        printf("[DC_IO READ] ERROR: ble_read returned %d (requested %zu bytes)\n", rc, size);
+    } else if (actual && *actual > 0) {
+        debug_hexdump("READ", data, *actual);
+    } else if (actual && *actual == 0) {
+        if (is_io_debug_enabled()) {
+            printf("[DC_IO READ] WARNING: ble_read returned success but 0 bytes (requested %zu)\n", size);
         }
     }
 
@@ -184,11 +175,16 @@ static dc_status_t ble_stream_read(dc_iostream_t *iostream, void *data, size_t s
  *------------------------------------------------------------------*/
 static dc_status_t ble_stream_write(dc_iostream_t *iostream, const void *data, size_t size, size_t *actual)
 {
-    // Log all writes
-    // debug_hexdump("WRITE", data, size);
+    debug_hexdump("WRITE", data, size);
     
     ble_stream_t *s = (ble_stream_t *) iostream;
-    return ble_write(s->ble_object, data, size, actual);
+    dc_status_t rc = ble_write(s->ble_object, data, size, actual);
+
+    if (rc != DC_STATUS_SUCCESS) {
+        printf("[DC_IO WRITE] ERROR: ble_write returned %d (attempted %zu bytes)\n", rc, size);
+    }
+
+    return rc;
 }
 
 /*--------------------------------------------------------------------
@@ -205,7 +201,9 @@ static dc_status_t ble_stream_ioctl(dc_iostream_t *iostream, unsigned int reques
  *------------------------------------------------------------------*/
 static dc_status_t ble_stream_sleep(dc_iostream_t *iostream, unsigned int milliseconds)
 {
-    // printf("DC_IO [SLEEP] %u ms\n", milliseconds);
+    if (is_io_debug_enabled()) {
+        printf("[DC_IO SLEEP] %u ms\n", milliseconds);
+    }
     ble_stream_t *s = (ble_stream_t *) iostream;
     return ble_sleep(s->ble_object, milliseconds);
 }
@@ -215,9 +213,12 @@ static dc_status_t ble_stream_sleep(dc_iostream_t *iostream, unsigned int millis
  *------------------------------------------------------------------*/
 static dc_status_t ble_stream_close(dc_iostream_t *iostream)
 {
-    printf("DC_IO [CLOSE]\n");
+    printf("[DC_IO CLOSE] Closing BLE stream\n");
     ble_stream_t *s = (ble_stream_t *) iostream;
     dc_status_t rc = ble_close(s->ble_object);
+    if (rc != DC_STATUS_SUCCESS) {
+        printf("[DC_IO CLOSE] ERROR: ble_close returned %d\n", rc);
+    }
     freeBLEObject(s->ble_object);
     free(s);
     return rc;
