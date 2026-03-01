@@ -185,6 +185,22 @@ dc_status_t create_parser_for_device(dc_parser_t **parser, dc_context_t *context
  */
 device_data_t* get_device_data_pointer(void);
 
+/**
+ * Sets the libdivecomputer internal log level.
+ * This controls how verbose the internal protocol logging is.
+ * Default is DC_LOGLEVEL_WARNING. Use DC_LOGLEVEL_ALL for full debug traces.
+ * Must be called BEFORE open_ble_device() to take effect for that session.
+ * @param level: One of DC_LOGLEVEL_NONE, DC_LOGLEVEL_ERROR, DC_LOGLEVEL_WARNING,
+ *               DC_LOGLEVEL_INFO, DC_LOGLEVEL_DEBUG, DC_LOGLEVEL_ALL
+ */
+void set_libdc_loglevel(dc_loglevel_t level);
+
+/**
+ * Gets the current libdivecomputer internal log level.
+ * @return The current log level
+ */
+dc_loglevel_t get_libdc_loglevel(void);
+
 #ifdef __cplusplus
 }
 #endif

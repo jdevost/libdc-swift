@@ -1,4 +1,6 @@
 import Foundation
+import Clibdivecomputer
+import LibDCBridge
 
 public enum LogLevel: Int {
     case debug = 0
@@ -45,11 +47,38 @@ public class Logger {
     }
     
     public func log(_ message: String, level: LogLevel = .debug, file: String = #file, function: String = #function) {
+        guard level.rawValue >= minLevel.rawValue else { return }
+        
         let timestamp = dateFormatter.string(from: Date())
         let fileName = (file as NSString).lastPathComponent
         
-        // Always print the message during debugging
         print("\(level.prefix) [\(timestamp)] [\(fileName)] \(message)")
+    }
+    
+    /// Enables debug mode: sets Swift log level to .debug and libdivecomputer
+    /// internal logging to DC_LOGLEVEL_ALL. This produces verbose protocol-level
+    /// traces (SLIP frames, packet hex dumps, etc.) that are essential for
+    /// diagnosing intermittent communication errors.
+    /// Call this BEFORE connecting to a device.
+    public func enableDebugMode() {
+        minLevel = .debug
+        shouldShowRawData = true
+        set_libdc_loglevel(DC_LOGLEVEL_ALL)
+        log("Debug mode enabled - libdivecomputer verbose logging active", level: .info)
+    }
+    
+    /// Disables debug mode: sets Swift log level to .warning and libdivecomputer
+    /// internal logging to DC_LOGLEVEL_WARNING.
+    public func disableDebugMode() {
+        set_libdc_loglevel(DC_LOGLEVEL_WARNING)
+        minLevel = .warning
+        shouldShowRawData = false
+        log("Debug mode disabled", level: .warning)
+    }
+    
+    /// Returns whether debug mode is currently active.
+    public var isDebugMode: Bool {
+        return get_libdc_loglevel() == DC_LOGLEVEL_ALL
     }
     
     private func handleBLEDataLog(_ message: String, _ timestamp: String) {

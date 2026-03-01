@@ -31,7 +31,8 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("include/libdivecomputer"),
                 .headerSearchPath("src"),
-                .define("HAVE_PTHREAD_H")
+                .define("HAVE_PTHREAD_H"),
+                .define("ENABLE_LOGGING")
             ]
         ),
         .target(

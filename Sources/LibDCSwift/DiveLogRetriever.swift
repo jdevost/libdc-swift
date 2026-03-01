@@ -272,22 +272,29 @@ public class DiveLogRetriever {
                 
                 let enumStatus = dc_device_foreach(dcDevice, diveCallbackClosure, contextPtr)
 
-                // Log errors for debugging
-                if enumStatus != DC_STATUS_SUCCESS && enumStatus != DC_STATUS_PROTOCOL {
-                    let errorName: String
-                    switch enumStatus {
-                    case DC_STATUS_UNSUPPORTED: errorName = "UNSUPPORTED"
-                    case DC_STATUS_INVALIDARGS: errorName = "INVALIDARGS"
-                    case DC_STATUS_NOMEMORY: errorName = "NOMEMORY"
-                    case DC_STATUS_NODEVICE: errorName = "NODEVICE"
-                    case DC_STATUS_NOACCESS: errorName = "NOACCESS"
-                    case DC_STATUS_IO: errorName = "IO"
-                    case DC_STATUS_TIMEOUT: errorName = "TIMEOUT"
-                    case DC_STATUS_DATAFORMAT: errorName = "DATAFORMAT"
-                    case DC_STATUS_CANCELLED: errorName = "CANCELLED"
-                    default: errorName = "UNKNOWN(\(enumStatus))"
+                // Log detailed status for all non-success results
+                let statusName: String
+                switch enumStatus {
+                case DC_STATUS_SUCCESS:     statusName = "SUCCESS"
+                case DC_STATUS_UNSUPPORTED: statusName = "UNSUPPORTED"
+                case DC_STATUS_INVALIDARGS: statusName = "INVALIDARGS"
+                case DC_STATUS_NOMEMORY:    statusName = "NOMEMORY"
+                case DC_STATUS_NODEVICE:    statusName = "NODEVICE"
+                case DC_STATUS_NOACCESS:    statusName = "NOACCESS"
+                case DC_STATUS_IO:          statusName = "IO"
+                case DC_STATUS_TIMEOUT:     statusName = "TIMEOUT"
+                case DC_STATUS_PROTOCOL:    statusName = "PROTOCOL"
+                case DC_STATUS_DATAFORMAT:  statusName = "DATAFORMAT"
+                case DC_STATUS_CANCELLED:   statusName = "CANCELLED"
+                default:                    statusName = "UNKNOWN(\(enumStatus.rawValue))"
+                }
+
+                if enumStatus != DC_STATUS_SUCCESS {
+                    logWarning("dc_device_foreach returned DC_STATUS_\(statusName) (dives downloaded so far: \(context.logCount - 1), fingerprintMatched: \(context.fingerprintMatched), hasStoredFingerprint: \(context.storedFingerprint != nil))")
+                    
+                    if Logger.shared.isDebugMode {
+                        logDebug("Context state at error: hasDeviceInfo=\(context.hasDeviceInfo), deviceSerial=\(context.deviceSerial ?? "nil"), deviceType=\(context.deviceTypeFromLibDC ?? "nil"), family=\(context.detectedFamily.rawValue), model=\(context.detectedModel)")
                     }
-                    logError("❌ Download failed: DC_STATUS_\(errorName)")
                 }
 
                 progressTimer.invalidate()
@@ -311,7 +318,7 @@ public class DiveLogRetriever {
                             shouldSaveFingerprint = false  // Don't update fingerprint if no new dives
                         } else if context.hasNewDives {
                             // We got some dives but then hit protocol error - partial download
-                            logWarning("⚠️ Protocol error after downloading \(context.logCount - 1) dive(s)")
+                            logWarning("Protocol error after downloading \(context.logCount - 1) dive(s) - check libdc logs above for protocol details")
                             downloadSucceeded = false
                             shouldSaveFingerprint = false  // Don't save partial download fingerprint
                         } else if context.storedFingerprint != nil {
@@ -320,7 +327,7 @@ public class DiveLogRetriever {
                             shouldSaveFingerprint = false
                         } else {
                             // Protocol error before getting any dives - genuine error
-                            logError("❌ Protocol error before downloading any dives")
+                            logError("Protocol error before downloading any dives - enable debug mode (Logger.shared.enableDebugMode()) for detailed protocol traces")
                             downloadSucceeded = false
                             shouldSaveFingerprint = false
                         }

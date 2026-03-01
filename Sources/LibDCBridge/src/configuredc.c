@@ -4,10 +4,53 @@
 #include <libdivecomputer/descriptor.h>
 #include <libdivecomputer/iostream.h>
 #include <libdivecomputer/parser.h>
+#include <libdivecomputer/context.h>
 #include "iostream-private.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+/*--------------------------------------------------------------------
+ * libdivecomputer log level (controllable at runtime)
+ *------------------------------------------------------------------*/
+static dc_loglevel_t g_libdc_loglevel = DC_LOGLEVEL_WARNING;
+
+void set_libdc_loglevel(dc_loglevel_t level) {
+    g_libdc_loglevel = level;
+}
+
+dc_loglevel_t get_libdc_loglevel(void) {
+    return g_libdc_loglevel;
+}
+
+/*--------------------------------------------------------------------
+ * Log callback that forwards libdivecomputer logs to printf
+ *------------------------------------------------------------------*/
+static void logfunc_callback(dc_context_t *context, dc_loglevel_t loglevel,
+    const char *file, unsigned int line, const char *function,
+    const char *message, void *userdata)
+{
+    (void)context;
+    (void)userdata;
+
+    const char *level_str;
+    switch (loglevel) {
+        case DC_LOGLEVEL_ERROR:   level_str = "ERROR";   break;
+        case DC_LOGLEVEL_WARNING: level_str = "WARNING"; break;
+        case DC_LOGLEVEL_INFO:    level_str = "INFO";    break;
+        case DC_LOGLEVEL_DEBUG:   level_str = "DEBUG";   break;
+        default:                  level_str = "TRACE";   break;
+    }
+
+    // Extract just the filename from the full path
+    const char *basename = file;
+    if (file) {
+        const char *slash = strrchr(file, '/');
+        if (slash) basename = slash + 1;
+    }
+
+    printf("[libdc %s] %s:%u (%s): %s\n", level_str, basename ? basename : "?", line, function ? function : "?", message ? message : "");
+}
 
 /*--------------------------------------------------------------------
  * BLE stream structures
@@ -323,6 +366,10 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
         printf("Failed to create context, rc=%d\n", rc);
         return rc;
     }
+
+    // Enable libdivecomputer internal logging
+    dc_context_set_loglevel(data->context, g_libdc_loglevel);
+    dc_context_set_logfunc(data->context, logfunc_callback, NULL);
 
     // Get descriptor for the device
     rc = find_descriptor_by_model(&descriptor, family, model);
