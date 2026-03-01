@@ -71,7 +71,17 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     private var bleTimeoutMs: Int = -1 // Timeout in ms, -1 means no timeout (use default 3s)
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
-    private var receivedData: Data = Data()
+    /// Queue of individual BLE notifications. Each notification is kept as a
+    /// separate Data element to preserve packet boundaries.  Protocols like
+    /// Shearwater's SLIP framing expect each `read()` to return exactly one
+    /// BLE packet; merging notifications in a flat buffer can produce
+    /// "Invalid packet header" errors when two notifications arrive before
+    /// the consumer reads the first one.
+    private var receivedPackets: [Data] = []
+    /// Leftover bytes from a partially-consumed notification.  When the
+    /// caller requests fewer bytes than a notification contains we store
+    /// the remainder here and drain it before dequeuing the next packet.
+    private var partialPacket: Data = Data()
     private let queue = DispatchQueue(label: "com.blemanager.queue")
     private let dataAvailableSemaphore = DispatchSemaphore(value: 0) // Signals when new data arrives
     private let writeReadySemaphore = DispatchSemaphore(value: 0) // Signals when peripheral is ready for next write-without-response
@@ -239,28 +249,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     }
     
     // MARK: - Data Handling
+    /// Unused legacy method — kept for API compatibility.  The packet-queue
+    /// approach (`receivedPackets`) replaced the flat-buffer approach.
     private func findNextCompleteFrame() -> Data? {
-        var frameToReturn: Data? = nil
-        
-        queue.sync {
-            guard let startIndex = receivedData.firstIndex(of: frameMarker) else {
-                return
-            }
-            
-            let afterStart = receivedData.index(after: startIndex)
-            guard afterStart < receivedData.count,
-                  let endIndex = receivedData[afterStart...].firstIndex(of: frameMarker) else {
-                return
-            }
-            
-            let frameEndIndex = receivedData.index(after: endIndex)
-            let frame = receivedData[startIndex..<frameEndIndex]
-            
-            receivedData.removeSubrange(startIndex..<frameEndIndex)
-            frameToReturn = Data(frame)
-        }
-        
-        return frameToReturn
+        return nil
     }
     
     @objc public func write(_ data: Data!) -> Bool {
@@ -307,10 +299,20 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             // Poll mode: check once and return immediately
             var outData: Data?
             queue.sync {
-                if !receivedData.isEmpty {
-                    let amount = min(requestedInt, receivedData.count)
-                    outData = receivedData.prefix(amount)
-                    receivedData.removeSubrange(0..<amount)
+                // First drain any leftover partial packet
+                if !partialPacket.isEmpty {
+                    let amount = min(requestedInt, partialPacket.count)
+                    outData = partialPacket.prefix(amount)
+                    partialPacket.removeSubrange(0..<amount)
+                } else if !receivedPackets.isEmpty {
+                    // Return the next complete BLE notification
+                    let packet = receivedPackets.removeFirst()
+                    if packet.count <= requestedInt {
+                        outData = packet
+                    } else {
+                        outData = packet.prefix(requestedInt)
+                        partialPacket = packet.suffix(from: requestedInt)
+                    }
                 }
             }
             return outData
@@ -320,10 +322,24 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             var outData: Data?
 
             queue.sync {
-                if !receivedData.isEmpty {
-                    let amount = min(requestedInt, receivedData.count)
-                    outData = receivedData.prefix(amount)
-                    receivedData.removeSubrange(0..<amount)
+                // First drain any leftover partial packet from a previous read
+                if !partialPacket.isEmpty {
+                    let amount = min(requestedInt, partialPacket.count)
+                    outData = partialPacket.prefix(amount)
+                    partialPacket.removeSubrange(0..<amount)
+                } else if !receivedPackets.isEmpty {
+                    // Return one complete BLE notification to preserve packet boundaries.
+                    // This is critical for protocols like Shearwater SLIP that expect
+                    // each read() to correspond to exactly one BLE notification.
+                    let packet = receivedPackets.removeFirst()
+                    if packet.count <= requestedInt {
+                        outData = packet
+                    } else {
+                        // Caller requested fewer bytes than the notification contains.
+                        // Return the requested portion and save the rest.
+                        outData = packet.prefix(requestedInt)
+                        partialPacket = Data(packet.suffix(from: requestedInt))
+                    }
                 }
             }
 
@@ -362,9 +378,8 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             self.connectedDevice = nil
         }
         queue.sync {
-            if !receivedData.isEmpty {
-                receivedData.removeAll()
-            }
+            receivedPackets.removeAll()
+            partialPacket.removeAll()
         }
 
         // Drain and signal semaphore to unblock any waiting reads and clear stale signals
@@ -684,8 +699,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         }
         
         queue.sync {
-            // Append new data to our buffer immediately
-            receivedData.append(data)
+            // Enqueue each BLE notification as a separate element to preserve
+            // packet boundaries.  readDataPartial dequeues one at a time.
+            receivedPackets.append(data)
         }
 
         // Signal that data is available - wake up any waiting read
