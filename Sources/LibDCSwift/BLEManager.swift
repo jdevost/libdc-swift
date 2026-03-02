@@ -259,25 +259,32 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         guard let peripheral = self.peripheral,
               let characteristic = self.writeCharacteristic else { return false }
 
-        // If using write-without-response, wait until the peripheral is ready
-        // to accept more data to avoid silently dropping packets.
+        // If using write-without-response, briefly wait for the peripheral to
+        // signal readiness.  This provides back-pressure when the BLE transmit
+        // buffer is full.  However, we must NOT hard-fail on timeout because
+        // canSendWriteWithoutResponse can get stuck false on some BLE stacks
+        // (e.g. after connection parameter renegotiation) even though the
+        // peripheral is perfectly able to accept data.  In that case we fall
+        // back to writing anyway — CoreBluetooth will buffer internally.
         if characteristic.properties.contains(.writeWithoutResponse) {
-            // Wait up to 5s for the transmit buffer to have space
-            let deadline = Date(timeIntervalSinceNow: 5.0)
-            while !peripheral.canSendWriteWithoutResponse {
-                if Date() > deadline {
-                    logError("[BLE WRITE] Timeout waiting for canSendWriteWithoutResponse (5s)")
-                    return false
-                }
-                // Wait for peripheralIsReady(toSendWriteWithoutResponse:) callback
-                let result = writeReadySemaphore.wait(timeout: .now() + .milliseconds(100))
-                if result == .timedOut {
-                    // Check again
-                    continue
+            if !peripheral.canSendWriteWithoutResponse {
+                // Brief wait (up to 500ms) for the transmit buffer to drain
+                let deadline = Date(timeIntervalSinceNow: 0.5)
+                while !peripheral.canSendWriteWithoutResponse {
+                    if Date() > deadline {
+                        // Fall through and write anyway — don't hard-fail
+                        logWarning("[BLE WRITE] canSendWriteWithoutResponse still false after 500ms, writing anyway (\(data?.count ?? 0) bytes)")
+                        break
+                    }
+                    // Wait for peripheralIsReady(toSendWriteWithoutResponse:) callback
+                    let result = writeReadySemaphore.wait(timeout: .now() + .milliseconds(50))
+                    if result == .timedOut {
+                        continue
+                    }
                 }
             }
             if Logger.shared.isDebugMode {
-                logDebug("[BLE WRITE] canSendWriteWithoutResponse=true, writing \(data?.count ?? 0) bytes")
+                logDebug("[BLE WRITE] canSendWriteWithoutResponse=\(peripheral.canSendWriteWithoutResponse), writing \(data?.count ?? 0) bytes")
             }
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
         } else {
