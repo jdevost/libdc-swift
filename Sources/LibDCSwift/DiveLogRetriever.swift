@@ -141,12 +141,15 @@ public class DiveLogRetriever {
         do {
             let diveData = try GenericParser.parseDiveData(
                 family: deviceFamily,
-                model: modelToUse, 
+                model: modelToUse,
                 diveNumber: context.logCount,
                 diveData: data,
                 dataSize: Int(size)
             )
-            
+
+            // Preserve the raw binary data from the dive computer
+            diveData.rawData = Data(bytes: data, count: Int(size))
+
             DispatchQueue.main.async {
                 context.viewModel.appendDives([diveData])
                 context.viewModel.updateProgress(count: context.logCount)
