@@ -265,6 +265,9 @@ public struct DiveData: Identifiable {
     
     // Decompression data
     public var decoStop: DecoStop?
+
+    // Raw binary data from the dive computer
+    public var rawData: Data?
     
     public struct Tank {
         public var volume: Double
@@ -411,7 +414,8 @@ public struct DiveData: Identifiable {
         setpoint: Double?,
         ppo2Readings: [(sensor: UInt32, value: Double)],
         cns: Double?,
-        decoStop: DecoStop?
+        decoStop: DecoStop?,
+        rawData: Data? = nil
     ) {
         self.number = number
         self.datetime = datetime
@@ -441,5 +445,6 @@ public struct DiveData: Identifiable {
         self.ppo2Readings = ppo2Readings
         self.cns = cns
         self.decoStop = decoStop
+        self.rawData = rawData
     }
 } 
