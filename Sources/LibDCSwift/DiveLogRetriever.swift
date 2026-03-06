@@ -139,7 +139,7 @@ public class DiveLogRetriever {
         }
 
         do {
-            let diveData = try GenericParser.parseDiveData(
+            var diveData = try GenericParser.parseDiveData(
                 family: deviceFamily,
                 model: modelToUse,
                 diveNumber: context.logCount,
