@@ -268,6 +268,9 @@ public struct DiveData: Identifiable {
 
     // Raw binary data from the dive computer
     public var rawData: Data?
+
+    // Fingerprint bytes for this dive (from the libdivecomputer enumeration callback)
+    public var fingerprint: Data?
     
     public struct Tank {
         public var volume: Double

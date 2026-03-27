@@ -150,6 +150,9 @@ public class DiveLogRetriever {
             // Preserve the raw binary data from the dive computer
             diveData.rawData = Data(bytes: data, count: Int(size))
 
+            // Attach the fingerprint so callers can persist it without touching UserDefaults
+            diveData.fingerprint = fingerprintData
+
             DispatchQueue.main.async {
                 context.viewModel.appendDives([diveData])
                 context.viewModel.updateProgress(count: context.logCount)

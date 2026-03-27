@@ -22,7 +22,7 @@ public struct DeviceFingerprint: Codable, Identifiable {
 /// Manages persistent storage of device fingerprints
 public class DeviceFingerprintStorage {
     public static let shared = DeviceFingerprintStorage()
-    private let fingerprintKey = "DeviceFingerprints"
+    private let fingerprintKey = "BlueDive"
     
     private init() {}
     
