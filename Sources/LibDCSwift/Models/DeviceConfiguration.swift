@@ -84,9 +84,14 @@ import LibDCBridge
         ComputerModel(name: "Mares Icon HD", family: .maresIconHD, modelID: 0x14),
         ComputerModel(name: "Mares Puck Pro", family: .maresIconHD, modelID: 0x18),
         ComputerModel(name: "Mares Smart", family: .maresIconHD, modelID: 0x000010),
+        ComputerModel(name: "Mares Smart Apnea", family: .maresIconHD, modelID: 0x000010),
         ComputerModel(name: "Mares Quad", family: .maresIconHD, modelID: 0x29),
         ComputerModel(name: "Mares Quad Air", family: .maresIconHD, modelID: 0x23),
+        ComputerModel(name: "Mares Quad Ci", family: .maresIconHD, modelID: 0x31),
+        ComputerModel(name: "Mares Quad 2", family: .maresIconHD, modelID: 0x32),
         ComputerModel(name: "Mares Smart Air", family: .maresIconHD, modelID: 0x24),
+        ComputerModel(name: "Mares Sirius", family: .maresIconHD, modelID: 0x2F),
+        ComputerModel(name: "Mares Puck Air 2", family: .maresIconHD, modelID: 0x2D),
         ComputerModel(name: "Mares Genius", family: .maresIconHD, modelID: 0x1C),
         ComputerModel(name: "Mares Puck 4", family: .maresIconHD, modelID: 0x35),
         
@@ -226,6 +231,7 @@ import LibDCBridge
         // Determine which configuration to use: Forced > Stored > Auto-detect from name > Default(0)
         let familyToUse: dc_family_t
         let modelToUse: UInt32
+        let autoDetected = (forcedModel == nil && storedDevice == nil) ? fromName(name) : nil
 
         if let forced = forcedModel {
             familyToUse = forced.family.asDCFamily
@@ -234,7 +240,7 @@ import LibDCBridge
         } else if let stored = storedDevice {
             familyToUse = stored.family.asDCFamily
             modelToUse = stored.model
-        } else if let detected = fromName(name) {
+        } else if let detected = autoDetected {
             // Auto-detect from device name BEFORE opening
             familyToUse = detected.family.asDCFamily
             modelToUse = detected.model
@@ -265,7 +271,7 @@ import LibDCBridge
                     family: forced.family,
                     model: forced.model
                 )
-            } else if storedDevice == nil, let detected = fromName(name) {
+            } else if storedDevice == nil, let detected = autoDetected {
                 DeviceStorage.shared.storeDevice(
                     uuid: deviceAddress,
                     name: name,
@@ -398,6 +404,15 @@ import LibDCBridge
     }
     
     public static func fromName(_ name: String) -> (family: DeviceFamily, model: UInt32)? {
+        // Try Swift-level BLE name resolution first (avoids C bridge misidentification)
+        if let result = resolveOceanicBLEName(name) {
+            return result
+        }
+        if let result = resolveByBLENamePrefix(name) {
+            return result
+        }
+        
+        // Fall back to C bridge for other devices
         var descriptor: OpaquePointer?
         let rc = find_descriptor_by_name(&descriptor, name)
         if rc == DC_STATUS_SUCCESS, let desc = descriptor {
@@ -413,11 +428,84 @@ import LibDCBridge
     }
     
     public static func getDeviceDisplayName(from name: String) -> String {
+        // Try Swift-level resolution for accurate display names
+        if let resolved = fromName(name) {
+            // Look up a human-readable name from supportedModels
+            if let model = supportedModels.first(where: { $0.family == resolved.family && $0.modelID == resolved.model }) {
+                return model.name
+            }
+            // Swift resolved the family/model but it's not in supportedModels —
+            // still better than the C bridge which would misidentify. Return the raw BLE name.
+            return name
+        }
+        
+        // Fall back to C bridge (only reached for brands without shared-filter issues)
         if let cString = get_formatted_device_name(name) {
             defer { free(cString) }
             return String(cString: cString)
         }
         return name
+    }
+    
+    // MARK: - BLE Name Resolution
+    
+    /// Resolves Oceanic/Aqualung/Pelagic BLE names to the correct model.
+    /// These devices advertise as "{hi}{lo}{digits}" where model = (hi << 8) | lo.
+    /// E.g. "FH12345" → model 0x4648 → Aqualung i300C
+    private static func resolveOceanicBLEName(_ name: String) -> (family: DeviceFamily, model: UInt32)? {
+        let scalars = Array(name.unicodeScalars)
+        guard scalars.count >= 2 else { return nil }
+        
+        let hi = scalars[0].value
+        let lo = scalars[1].value
+        
+        guard (0x20...0x7E).contains(hi), (0x20...0x7E).contains(lo) else { return nil }
+        
+        // Remaining characters must be digits (serial number)
+        for i in 2..<scalars.count {
+            guard (0x30...0x39).contains(scalars[i].value) else { return nil }
+        }
+        
+        let modelID = UInt32((hi << 8) | lo)
+        
+        if let match = supportedModels.first(where: {
+            ($0.family == .oceanicAtom2 || $0.family == .pelagicI330R) && $0.modelID == modelID
+        }) {
+            return (family: match.family, model: match.modelID)
+        }
+        
+        return nil
+    }
+    
+    /// BLE name prefix mapping for brands where the shared filter causes misidentification.
+    /// Ordered most-specific-first within each brand.
+    private static let bleNamePrefixes: [(prefix: String, family: DeviceFamily, modelID: UInt32)] = [
+        // Mares - BLE advertisement names
+        ("Mares Genius", .maresIconHD, 0x1C),
+        ("Sirius",       .maresIconHD, 0x2F),
+        ("Quad Ci",      .maresIconHD, 0x31),
+        ("Quad Air",     .maresIconHD, 0x23),
+        ("Quad2",        .maresIconHD, 0x32),
+        ("Puck Pro U",   .maresIconHD, 0x35),
+        ("Puck Pro",     .maresIconHD, 0x18),
+        ("Puck4",        .maresIconHD, 0x35),
+        ("Puck Lite",    .maresIconHD, 0x35),
+        ("Puck Air",     .maresIconHD, 0x2D),
+        ("Puck",         .maresIconHD, 0x18),
+        ("Smart Air",    .maresIconHD, 0x24),
+        ("Smart Apnea",  .maresIconHD, 0x000010),
+        ("Smart",        .maresIconHD, 0x000010),
+        ("Mares bluelink pro", .maresIconHD, 0x000010),
+    ]
+    
+    /// Resolves BLE names using the prefix mapping table.
+    private static func resolveByBLENamePrefix(_ name: String) -> (family: DeviceFamily, model: UInt32)? {
+        for entry in bleNamePrefixes {
+            if name.range(of: entry.prefix, options: [.caseInsensitive, .anchored]) != nil {
+                return (family: entry.family, model: entry.modelID)
+            }
+        }
+        return nil
     }
     
     private var descriptor: OpaquePointer?
