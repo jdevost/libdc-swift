@@ -19,7 +19,8 @@ public struct SampleData {
     var tempMaximum: Double = -Double.infinity // Maximum temperature
     
     // Tank pressure data
-    var pressure: [(tank: Int, value: Double)] = []  // Tank pressure readings
+    var pressure: [(tank: Int, value: Double)] = []  // Tank pressure readings (cumulative)
+    var currentPressures: [Int: Double] = [:]        // Per-tank pressures for the current sample
     
     // Profile data
     var profile: [DiveProfilePoint] = []  // Detailed dive profile
