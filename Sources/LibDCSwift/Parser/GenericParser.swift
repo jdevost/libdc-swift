@@ -122,6 +122,7 @@ public class GenericParser {
                 depth: data.depth,
                 temperature: data.temperature,
                 pressure: data.pressure.last?.value,
+                pressures: data.currentPressures,
                 po2: data.ppo2.last?.value,
                 ndl: ndl,
                 decoStop: decoStop,
@@ -135,6 +136,7 @@ public class GenericParser {
                 setpoint: data.setpoint
             )
             data.profile.append(point)
+            data.currentPressures = [:]
             
             // Update maximum time
             data.maxTime = max(data.maxTime, data.time)
@@ -250,10 +252,10 @@ public class GenericParser {
                 wrapper.data.maxDepth = max(wrapper.data.maxDepth, value.depth)
                 
             case DC_SAMPLE_PRESSURE:
-                wrapper.data.pressure.append((
-                    tank: Int(value.pressure.tank),
-                    value: value.pressure.value
-                ))
+                let tankIdx = Int(value.pressure.tank)
+                let pressureVal = value.pressure.value
+                wrapper.data.pressure.append((tank: tankIdx, value: pressureVal))
+                wrapper.data.currentPressures[tankIdx] = pressureVal
                 
             case DC_SAMPLE_TEMPERATURE:
                 wrapper.data.temperature = value.temperature
@@ -296,6 +298,7 @@ public class GenericParser {
                     depth: wrapper.data.depth,
                     temperature: wrapper.data.temperature,
                     pressure: wrapper.data.pressure.last?.value,
+                    pressures: wrapper.data.currentPressures,
                     po2: wrapper.data.ppo2.last?.value,
                     events: events,
                     ndl: ndl,
