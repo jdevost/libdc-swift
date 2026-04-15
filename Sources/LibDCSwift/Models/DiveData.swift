@@ -63,6 +63,7 @@ public struct DiveProfilePoint {
     public let depth: Double
     public let temperature: Double?
     public let pressure: Double?
+    public let pressures: [Int: Double]  // Per-tank pressure readings {tankIndex: bar}
     public let po2: Double?  // Oxygen partial pressure
     public let pn2: Double?  // Nitrogen partial pressure
     public let phe: Double?  // Helium partial pressure
@@ -89,6 +90,7 @@ public struct DiveProfilePoint {
         depth: Double,
         temperature: Double? = nil,
         pressure: Double? = nil,
+        pressures: [Int: Double] = [:],
         po2: Double? = nil,
         pn2: Double? = nil,
         phe: Double? = nil,
@@ -108,6 +110,7 @@ public struct DiveProfilePoint {
         self.depth = depth
         self.temperature = temperature
         self.pressure = pressure
+        self.pressures = pressures
         self.po2 = po2
         self.pn2 = pn2
         self.phe = phe
