@@ -201,6 +201,26 @@ void set_libdc_loglevel(dc_loglevel_t level);
  */
 dc_loglevel_t get_libdc_loglevel(void);
 
+/**
+ * Callback type for routing C/ObjC log messages to the Swift Logger buffer.
+ * The message is a null-terminated string (no trailing newline).
+ */
+typedef void (*bridge_log_callback_t)(const char *message);
+
+/**
+ * Sets the callback that receives all C-level log messages.
+ * Call this once during app init (e.g. from Swift) so that printf/NSLog
+ * output from configuredc.c and BLEBridge.m is captured in the
+ * exportable diagnostic log.
+ */
+void set_bridge_log_callback(bridge_log_callback_t callback);
+
+/**
+ * Printf-like logging function used throughout the C bridge.
+ * Prints to stdout AND forwards to the Swift Logger via the callback.
+ */
+void bridge_log(const char *format, ...);
+
 #ifdef __cplusplus
 }
 #endif
