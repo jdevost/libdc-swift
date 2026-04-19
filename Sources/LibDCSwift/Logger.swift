@@ -1,6 +1,9 @@
 import Foundation
 import Clibdivecomputer
 import LibDCBridge
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public enum LogLevel: Int {
     case debug = 0
@@ -26,6 +29,11 @@ public class Logger {
     private var dataCounter = 0  // Track number of data packets
     private var totalBytesReceived = 0  // Track total bytes
     
+    // In-memory log buffer for diagnostic export
+    private var logEntries: [String] = []
+    private let logEntriesLock = NSLock()
+    private let maxLogEntries = 5000
+    
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
@@ -44,15 +52,54 @@ public class Logger {
     private init() {
         isEnabled = true
         minLevel = .debug
+        registerBridgeLogCallback()
+    }
+    
+    /// Registers the C bridge log callback so all printf/NSLog output
+    /// from configuredc.c and BLEBridge.m is captured in the log buffer.
+    private func registerBridgeLogCallback() {
+        set_bridge_log_callback { cMessage in
+            guard let cMessage = cMessage else { return }
+            let message = String(cString: cMessage)
+            Logger.shared.appendBridgeMessage(message)
+        }
+        // Mark the callback as registered so we can verify in the export
+        let timestamp = dateFormatter.string(from: Date())
+        let entry = "ℹ️ INFO [\(timestamp)] [Logger.swift] Bridge log callback registered — C/ObjC output will be captured"
+        logEntriesLock.lock()
+        logEntries.append(entry)
+        logEntriesLock.unlock()
+    }
+    
+    /// Appends a raw message from the C bridge to the log buffer.
+    private func appendBridgeMessage(_ message: String) {
+        let timestamp = dateFormatter.string(from: Date())
+        let entry = "[C] [\(timestamp)] \(message)"
+        logEntriesLock.lock()
+        logEntries.append(entry)
+        if logEntries.count > maxLogEntries {
+            logEntries.removeFirst(logEntries.count - maxLogEntries)
+        }
+        logEntriesLock.unlock()
     }
     
     public func log(_ message: String, level: LogLevel = .debug, file: String = #file, function: String = #function) {
-        guard level.rawValue >= minLevel.rawValue else { return }
-        
         let timestamp = dateFormatter.string(from: Date())
         let fileName = (file as NSString).lastPathComponent
         
-        print("\(level.prefix) [\(timestamp)] [\(fileName)] \(message)")
+        let entry = "\(level.prefix) [\(timestamp)] [\(fileName)] \(message)"
+        
+        // Always buffer every entry for diagnostic export
+        logEntriesLock.lock()
+        logEntries.append(entry)
+        if logEntries.count > maxLogEntries {
+            logEntries.removeFirst(logEntries.count - maxLogEntries)
+        }
+        logEntriesLock.unlock()
+        
+        // Only print to console if level passes the filter
+        guard level.rawValue >= minLevel.rawValue else { return }
+        print(entry)
     }
     
     /// Enables debug mode: sets Swift log level to .debug and libdivecomputer
@@ -125,6 +172,62 @@ public class Logger {
     public func resetDataCounters() {
         dataCounter = 0
         totalBytesReceived = 0
+    }
+    
+    /// Clears the in-memory log buffer.
+    public func clearLogBuffer() {
+        logEntriesLock.lock()
+        logEntries.removeAll()
+        logEntriesLock.unlock()
+    }
+    
+    /// Generates a full diagnostic log string suitable for export/sharing.
+    public func generateDiagnosticLog() -> String {
+        var lines: [String] = []
+        lines.append("BlueDive Diagnostic Log")
+        lines.append("========================")
+        lines.append("Generated: \(ISO8601DateFormatter().string(from: Date()))")
+        
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        lines.append("App Version: \(appVersion) (\(buildNumber))")
+        
+        #if canImport(UIKit)
+        let device = UIDevice.current
+        lines.append("Device: \(deviceModelIdentifier())")
+        lines.append("OS: \(device.systemName) \(device.systemVersion)")
+        #else
+        lines.append("Platform: macOS")
+        #endif
+        
+        lines.append("Debug Mode: \(isDebugMode ? "ON" : "OFF")")
+        lines.append("Min Log Level: \(minLevel)")
+        lines.append("")
+        
+        logEntriesLock.lock()
+        let count = logEntries.count
+        let entriesCopy = logEntries
+        logEntriesLock.unlock()
+        
+        lines.append("=== Log Entries (\(count)) ===")
+        lines.append("")
+        lines.append(contentsOf: entriesCopy)
+        
+        return lines.joined(separator: "\n")
+    }
+    
+    private func deviceModelIdentifier() -> String {
+        #if canImport(UIKit)
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        return withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0) ?? "Unknown"
+            }
+        }
+        #else
+        return "Mac"
+        #endif
     }
 
 }
