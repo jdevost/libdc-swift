@@ -9,6 +9,39 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
+
+/*--------------------------------------------------------------------
+ * Bridge log callback — routes C messages to Swift Logger buffer
+ *------------------------------------------------------------------*/
+static bridge_log_callback_t g_bridge_log_callback = NULL;
+
+void set_bridge_log_callback(bridge_log_callback_t callback) {
+    g_bridge_log_callback = callback;
+}
+
+void bridge_log(const char *format, ...) {
+    char buffer[2048];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    // Always print to console
+    printf("%s", buffer);
+
+    // Forward to Swift Logger if callback is set
+    if (g_bridge_log_callback) {
+        // Strip trailing newline for cleaner log entries
+        size_t len = strlen(buffer);
+        while (len > 0 && (buffer[len-1] == '\n' || buffer[len-1] == '\r')) {
+            buffer[--len] = '\0';
+        }
+        if (len > 0) {
+            g_bridge_log_callback(buffer);
+        }
+    }
+}
 
 /*--------------------------------------------------------------------
  * libdivecomputer log level (controllable at runtime)
@@ -49,7 +82,7 @@ static void logfunc_callback(dc_context_t *context, dc_loglevel_t loglevel,
         if (slash) basename = slash + 1;
     }
 
-    printf("[libdc %s] %s:%u (%s): %s\n", level_str, basename ? basename : "?", line, function ? function : "?", message ? message : "");
+    bridge_log("[libdc %s] %s:%u (%s): %s\n", level_str, basename ? basename : "?", line, function ? function : "?", message ? message : "");
 }
 
 /*--------------------------------------------------------------------
@@ -105,13 +138,16 @@ static inline bool is_io_debug_enabled(void) {
 static void debug_hexdump(const char *prefix, const void *data, size_t size) {
     if (!is_io_debug_enabled()) return;
     const unsigned char *p = (const unsigned char *)data;
-    printf("[DC_IO %s] (%zu bytes): ", prefix, size);
+    char buf[512];
+    int pos = snprintf(buf, sizeof(buf), "[DC_IO %s] (%zu bytes): ", prefix, size);
     size_t limit = size > 64 ? 64 : size;
-    for (size_t i = 0; i < limit; i++) {
-        printf("%02X ", p[i]);
+    for (size_t i = 0; i < limit && pos < (int)sizeof(buf) - 4; i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", p[i]);
     }
-    if (size > 64) printf("... (%zu more)", size - 64);
-    printf("\n");
+    if (size > 64) {
+        snprintf(buf + pos, sizeof(buf) - pos, "... (%zu more)", size - 64);
+    }
+    bridge_log("%s\n", buf);
 }
 
 /*--------------------------------------------------------------------
@@ -122,7 +158,7 @@ static dc_status_t ble_iostream_create(dc_iostream_t **out, dc_context_t *contex
     ble_stream_t *stream = (ble_stream_t *) malloc(sizeof(ble_stream_t));
     if (!stream) {
         if (context) {
-            printf("ble_iostream_create: no memory\n");
+            bridge_log("ble_iostream_create: no memory\n");
         }
         return DC_STATUS_NOMEMORY;
     }
@@ -143,7 +179,7 @@ static dc_status_t ble_iostream_create(dc_iostream_t **out, dc_context_t *contex
 static dc_status_t ble_stream_set_timeout(dc_iostream_t *iostream, int timeout)
 {
     if (is_io_debug_enabled()) {
-        printf("[DC_IO TIMEOUT] libdivecomputer requesting timeout: %d ms\n", timeout);
+        bridge_log("[DC_IO TIMEOUT] libdivecomputer requesting timeout: %d ms\n", timeout);
     }
     ble_stream_t *s = (ble_stream_t *) iostream;
     return ble_set_timeout(s->ble_object, timeout);
@@ -159,12 +195,12 @@ static dc_status_t ble_stream_read(dc_iostream_t *iostream, void *data, size_t s
 
     if (rc != DC_STATUS_SUCCESS) {
         // Always log read errors - these are critical for diagnosing protocol failures
-        printf("[DC_IO READ] ERROR: ble_read returned %d (requested %zu bytes)\n", rc, size);
+        bridge_log("[DC_IO READ] ERROR: ble_read returned %d (requested %zu bytes)\n", rc, size);
     } else if (actual && *actual > 0) {
         debug_hexdump("READ", data, *actual);
     } else if (actual && *actual == 0) {
         if (is_io_debug_enabled()) {
-            printf("[DC_IO READ] WARNING: ble_read returned success but 0 bytes (requested %zu)\n", size);
+            bridge_log("[DC_IO READ] WARNING: ble_read returned success but 0 bytes (requested %zu)\n", size);
         }
     }
 
@@ -182,7 +218,7 @@ static dc_status_t ble_stream_write(dc_iostream_t *iostream, const void *data, s
     dc_status_t rc = ble_write(s->ble_object, data, size, actual);
 
     if (rc != DC_STATUS_SUCCESS) {
-        printf("[DC_IO WRITE] ERROR: ble_write returned %d (attempted %zu bytes)\n", rc, size);
+        bridge_log("[DC_IO WRITE] ERROR: ble_write returned %d (attempted %zu bytes)\n", rc, size);
     }
 
     return rc;
@@ -203,7 +239,7 @@ static dc_status_t ble_stream_ioctl(dc_iostream_t *iostream, unsigned int reques
 static dc_status_t ble_stream_sleep(dc_iostream_t *iostream, unsigned int milliseconds)
 {
     if (is_io_debug_enabled()) {
-        printf("[DC_IO SLEEP] %u ms\n", milliseconds);
+        bridge_log("[DC_IO SLEEP] %u ms\n", milliseconds);
     }
     ble_stream_t *s = (ble_stream_t *) iostream;
     return ble_sleep(s->ble_object, milliseconds);
@@ -214,14 +250,15 @@ static dc_status_t ble_stream_sleep(dc_iostream_t *iostream, unsigned int millis
  *------------------------------------------------------------------*/
 static dc_status_t ble_stream_close(dc_iostream_t *iostream)
 {
-    printf("[DC_IO CLOSE] Closing BLE stream\n");
+    bridge_log("[DC_IO CLOSE] Closing BLE stream\n");
     ble_stream_t *s = (ble_stream_t *) iostream;
     dc_status_t rc = ble_close(s->ble_object);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("[DC_IO CLOSE] ERROR: ble_close returned %d\n", rc);
+        bridge_log("[DC_IO CLOSE] ERROR: ble_close returned %d\n", rc);
     }
     freeBLEObject(s->ble_object);
-    free(s);
+    // Do NOT free(s) here — dc_iostream_close() already frees the iostream
+    // via dc_iostream_deallocate(). Freeing here causes a double-free crash.
     return rc;
 }
 
@@ -235,13 +272,13 @@ dc_status_t ble_packet_open(dc_iostream_t **iostream, dc_context_t *context, con
     // Create a BLE object
     ble_object_t *io = createBLEObject();
     if (io == NULL) {
-        printf("ble_packet_open: Failed to create BLE object\n");
+        bridge_log("ble_packet_open: Failed to create BLE object\n");
         return DC_STATUS_NOMEMORY;
     }
 
     // Connect to the device
     if (!connectToBLEDevice(io, devaddr)) {
-        printf("ble_packet_open: Failed to connect to device\n");
+        bridge_log("ble_packet_open: Failed to connect to device\n");
         freeBLEObject(io);
         return DC_STATUS_IO;
     }
@@ -249,7 +286,7 @@ dc_status_t ble_packet_open(dc_iostream_t **iostream, dc_context_t *context, con
     // Create a custom BLE iostream
     dc_status_t status = ble_iostream_create(iostream, context, io);
     if (status != DC_STATUS_SUCCESS) {
-        printf("ble_packet_open: Failed to create iostream\n");
+        bridge_log("ble_packet_open: Failed to create iostream\n");
         freeBLEObject(io);
         return status;
     }
@@ -286,19 +323,21 @@ static void ble_device_event_cb(dc_device_t *device, dc_event_type_t event, cons
                 );
                 
                 if (fingerprint && fsize > 0) {
-                    printf("[C] Setting fingerprint on device: ");
-                    for (size_t i = 0; i < fsize; i++) {
-                        printf("0x%02x ", fingerprint[i]);
+                    char fpbuf[256];
+                    int fppos = snprintf(fpbuf, sizeof(fpbuf), "[C] Setting fingerprint on device: ");
+                    for (size_t i = 0; i < fsize && fppos < (int)sizeof(fpbuf) - 8; i++) {
+                        fppos += snprintf(fpbuf + fppos, sizeof(fpbuf) - fppos, "0x%02x ", fingerprint[i]);
                     }
-                    printf("(size=%zu)\n", fsize);
+                    snprintf(fpbuf + fppos, sizeof(fpbuf) - fppos, "(size=%zu)", fsize);
+                    bridge_log("%s\n", fpbuf);
 
                     dc_status_t fp_status = dc_device_set_fingerprint(device, fingerprint, fsize);
-                    printf("[C] dc_device_set_fingerprint returned: %d\n", fp_status);
+                    bridge_log("[C] dc_device_set_fingerprint returned: %d\n", fp_status);
 
                     devdata->fingerprint = fingerprint;
                     devdata->fsize = fsize;
                 } else {
-                    printf("[C] No fingerprint returned from callback (fingerprint=%p, fsize=%zu)\n",
+                    bridge_log("[C] No fingerprint returned from callback (fingerprint=%p, fsize=%zu)\n",
                            (void*)fingerprint, fsize);
                 }
             }
@@ -365,7 +404,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
     // Create context
     rc = dc_context_new(&data->context);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("Failed to create context, rc=%d\n", rc);
+        bridge_log("Failed to create context, rc=%d\n", rc);
         return rc;
     }
 
@@ -376,7 +415,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
     // Get descriptor for the device
     rc = find_descriptor_by_model(&descriptor, family, model);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("Failed to find descriptor, rc=%d\n", rc);
+        bridge_log("Failed to find descriptor, rc=%d\n", rc);
         close_device_data(data);
         return rc;
     }
@@ -384,7 +423,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
     // Create BLE iostream
     rc = ble_packet_open(&data->iostream, data->context, devaddr, data);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("Failed to open BLE connection, rc=%d\n", rc);
+        bridge_log("Failed to open BLE connection, rc=%d\n", rc);
         close_device_data(data);
         return rc;
     }
@@ -392,7 +431,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
     // Use dc_device_open to handle device-specific opening
     rc = dc_device_open(&data->device, data->context, descriptor, data->iostream);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("Failed to open device, rc=%d\n", rc);
+        bridge_log("Failed to open device, rc=%d\n", rc);
         close_device_data(data);
         return rc;
     }
@@ -402,7 +441,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
     // Updated to use the renamed callback function
     rc = dc_device_set_events(data->device, events, ble_device_event_cb, data);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("Failed to set event handler, rc=%d\n", rc);
+        bridge_log("Failed to set event handler, rc=%d\n", rc);
         close_device_data(data);
         return rc;
     }
@@ -443,7 +482,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
 
     rc = dc_descriptor_iterator(&iterator);
     if (rc != DC_STATUS_SUCCESS) {
-        printf("❌ Failed to create descriptor iterator: %d\n", rc);
+        bridge_log("❌ Failed to create descriptor iterator: %d\n", rc);
         return rc;
     }
 
@@ -457,7 +496,7 @@ dc_status_t open_ble_device(device_data_t *data, const char *devaddr, dc_family_
         dc_descriptor_free(descriptor);
     }
 
-    printf("❌ No matching descriptor found for Family %d Model %d\n", family, model);
+    bridge_log("❌ No matching descriptor found for Family %d Model %d\n", family, model);
     dc_iterator_free(iterator);
     return DC_STATUS_UNSUPPORTED;
 }
@@ -595,7 +634,7 @@ dc_status_t find_descriptor_by_name(dc_descriptor_t **out_descriptor, const char
             // Create iterator to find matching descriptor
             rc = dc_descriptor_iterator(&iterator);
             if (rc != DC_STATUS_SUCCESS) {
-                printf("❌ Failed to create descriptor iterator: %d\n", rc);
+                bridge_log("❌ Failed to create descriptor iterator: %d\n", rc);
                 return rc;
             }
 
