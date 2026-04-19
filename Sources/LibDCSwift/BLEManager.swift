@@ -201,7 +201,8 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         if Logger.shared.isDebugMode {
             let elapsed = Date().timeIntervalSince(startTime)
-            logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil"), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
+            let writeType = writeCharacteristic?.properties.contains(.write) == true ? "withResponse" : "withoutResponse"
+            logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil") (props=\(writeCharacteristic?.properties.rawValue ?? 0), writeType=\(writeType)), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
         }
         
         return writeCharacteristic != nil && notifyCharacteristic != nil
@@ -259,24 +260,27 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         guard let peripheral = self.peripheral,
               let characteristic = self.writeCharacteristic else { return false }
 
-        // If using write-without-response, briefly wait for the peripheral to
-        // signal readiness.  This provides back-pressure when the BLE transmit
-        // buffer is full.  However, we must NOT hard-fail on timeout because
-        // canSendWriteWithoutResponse can get stuck false on some BLE stacks
-        // (e.g. after connection parameter renegotiation) even though the
-        // peripheral is perfectly able to accept data.  In that case we fall
-        // back to writing anyway — CoreBluetooth will buffer internally.
-        if characteristic.properties.contains(.writeWithoutResponse) {
+        // Determine write type based on characteristic properties.
+        // Prefer .withResponse when available — it has built-in BLE flow
+        // control and is required by some protocols (Oceanic/Aqualung i300C).
+        // Only fall back to .withoutResponse when the characteristic does NOT
+        // support .write (e.g. Mares BlueLink Pro data characteristic).
+        let useWithResponse = characteristic.properties.contains(.write)
+
+        if useWithResponse {
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE WRITE] withResponse, \(data?.count ?? 0) bytes")
+            }
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        } else {
+            // writeWithoutResponse path — briefly wait for transmit readiness
             if !peripheral.canSendWriteWithoutResponse {
-                // Brief wait (up to 500ms) for the transmit buffer to drain
                 let deadline = Date(timeIntervalSinceNow: 0.5)
                 while !peripheral.canSendWriteWithoutResponse {
                     if Date() > deadline {
-                        // Fall through and write anyway — don't hard-fail
                         logWarning("[BLE WRITE] canSendWriteWithoutResponse still false after 500ms, writing anyway (\(data?.count ?? 0) bytes)")
                         break
                     }
-                    // Wait for peripheralIsReady(toSendWriteWithoutResponse:) callback
                     let result = writeReadySemaphore.wait(timeout: .now() + .milliseconds(50))
                     if result == .timedOut {
                         continue
@@ -284,11 +288,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 }
             }
             if Logger.shared.isDebugMode {
-                logDebug("[BLE WRITE] canSendWriteWithoutResponse=\(peripheral.canSendWriteWithoutResponse), writing \(data?.count ?? 0) bytes")
+                logDebug("[BLE WRITE] withoutResponse, canSend=\(peripheral.canSendWriteWithoutResponse), \(data?.count ?? 0) bytes")
             }
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
-        } else {
-            peripheral.writeValue(data, for: characteristic, type: .withResponse)
         }
         return true
     }
