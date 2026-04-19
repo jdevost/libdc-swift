@@ -32,7 +32,7 @@ public class Logger {
     // In-memory log buffer for diagnostic export
     private var logEntries: [String] = []
     private let logEntriesLock = NSLock()
-    private let maxLogEntries = 5000
+    private let maxLogEntries = 20000
     
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
