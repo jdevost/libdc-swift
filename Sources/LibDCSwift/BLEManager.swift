@@ -680,17 +680,43 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return
         }
         
+        // Only accept characteristics from the preferred (known dive-computer)
+        // service. Other services (e.g. GATT 0x1801 with Service Changed
+        // indicate characteristic) can overwrite the correct write/notify
+        // characteristic and cause ATT errors on Mares, Aqualung, etc.
+        if let preferred = preferredService, service.uuid != preferred.uuid {
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE CHARS] Skipping non-preferred service: \(service.uuid.uuidString)")
+            }
+            return
+        }
+        
+        if Logger.shared.isDebugMode {
+            for characteristic in characteristics {
+                logDebug("[BLE CHARS] service=\(service.uuid.uuidString) char=\(characteristic.uuid.uuidString) props=\(characteristic.properties.rawValue)")
+            }
+        }
+        
         for characteristic in characteristics {
-            if isWriteCharacteristic(characteristic) {
+            // Prefer .writeWithoutResponse over .write — Mares BlueLink Pro
+            // has both a data char (.writeWithoutResponse) and a control char
+            // (.write). Writing protocol data to the control char causes an
+            // "Unknown ATT error".
+            if characteristic.properties.contains(.writeWithoutResponse) {
+                writeCharacteristic = characteristic
+            } else if writeCharacteristic == nil && characteristic.properties.contains(.write) {
                 writeCharacteristic = characteristic
             }
             
-            if isReadCharacteristic(characteristic) {
+            // Prefer .notify over .indicate for the same reason.
+            if characteristic.properties.contains(.notify) {
                 notifyCharacteristic = characteristic
                 // Note: Do NOT call setNotifyValue here — enableNotifications()
                 // is called separately by connectToBLEDevice (BLEBridge.m) after
                 // service discovery completes. Subscribing twice can confuse some
                 // BLE stacks (e.g. Shearwater).
+            } else if notifyCharacteristic == nil && characteristic.properties.contains(.indicate) {
+                notifyCharacteristic = characteristic
             }
         }
     }
