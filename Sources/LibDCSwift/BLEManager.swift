@@ -382,10 +382,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         isDisconnecting = true
         // Reset timeout to default for next connection
         self.bleTimeoutMs = -1
-        DispatchQueue.main.async {
-            self.isPeripheralReady = false
-            self.connectedDevice = nil
-        }
+        // Clear ready state SYNCHRONOUSLY so that any immediate retry
+        // (e.g. open_ble_device_with_identification fallback) sees it.
+        // DispatchQueue.main.async would leave isPeripheralReady=true
+        // for a brief window, causing the retry to skip the connection
+        // wait and fail with "No peripheral available".
+        self.isPeripheralReady = false
+        self.connectedDevice = nil
         queue.sync {
             receivedPackets.removeAll()
             partialPacket.removeAll()
@@ -414,6 +417,7 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if let peripheral = self.peripheral {
             self.writeCharacteristic = nil
             self.notifyCharacteristic = nil
+            self.preferredService = nil
             self.peripheral = nil
             centralManager.cancelPeripheralConnection(peripheral)
         }
@@ -446,13 +450,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return false
         }
         
-        if Thread.isMainThread {
-            self.peripheral = peripheral
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.peripheral = peripheral
-            }
-        }
+        // Set peripheral synchronously regardless of thread.
+        // BLEBridge.m calls connectToBLEDevice → connect(toDevice:) from
+        // a background thread, then immediately checks isPeripheralReady
+        // and calls discoverServices().  If we defer the assignment to
+        // main.async, discoverServices() sees self.peripheral == nil and
+        // fails with "No peripheral available".
+        self.peripheral = peripheral
         peripheral.delegate = self
         centralManager.connect(peripheral, options: nil)
         return true  // Return immediately, connection status will be handled by delegate
@@ -518,13 +522,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
     public func systemDisconnect(_ peripheral: CBPeripheral) {
         logInfo("Performing system-level disconnect for \(peripheral.name ?? "Unknown Device")")
-        DispatchQueue.main.async {
-            self.isPeripheralReady = false
-            self.connectedDevice = nil
-            self.writeCharacteristic = nil
-            self.notifyCharacteristic = nil
-            self.peripheral = nil
-        }
+        self.isPeripheralReady = false
+        self.connectedDevice = nil
+        self.writeCharacteristic = nil
+        self.notifyCharacteristic = nil
+        self.preferredService = nil
+        self.peripheral = nil
         centralManager.cancelPeripheralConnection(peripheral)
     }
     
