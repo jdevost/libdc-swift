@@ -24,7 +24,7 @@ void freeBLEObject(ble_object_t* obj) {
 
 bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     if (!io || !deviceAddress) {
-        NSLog(@"[BLE] Invalid parameters passed to connectToBLEDevice");
+        bridge_log("[BLE] Invalid parameters passed to connectToBLEDevice\n");
         return false;
     }
     
@@ -32,11 +32,11 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     id<CoreBluetoothManagerProtocol> manager = [CoreBluetoothManagerClass shared];
     NSString *address = [NSString stringWithUTF8String:deviceAddress];
     
-    NSLog(@"[BLE] Connecting to device: %@", address);
+    bridge_log("[BLE] Connecting to device: %s\n", [address UTF8String]);
     
     bool success = [manager connectToDevice:address];
     if (!success) {
-        NSLog(@"[BLE] ERROR: connectToDevice returned false");
+        bridge_log("[BLE] ERROR: connectToDevice returned false\n");
         return false;
     }
     
@@ -45,7 +45,7 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     while ([[NSDate date] compare:timeout] == NSOrderedAscending) {
         // Check if peripheral is ready using protocol method
         if ([manager getPeripheralReadyState]) {
-            NSLog(@"[BLE] Peripheral is ready for communication");
+            bridge_log("[BLE] Peripheral is ready for communication\n");
             break;
         }
         // Small sleep to avoid busy-waiting
@@ -54,26 +54,26 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     
     // Final check if we're actually ready
     if (![manager getPeripheralReadyState]) {
-        NSLog(@"[BLE] ERROR: Timeout (10s) waiting for peripheral to be ready");
+        bridge_log("[BLE] ERROR: Timeout (10s) waiting for peripheral to be ready\n");
         [manager close];
         return false;
     }
 
     success = [manager discoverServices];
     if (!success) {
-        NSLog(@"[BLE] ERROR: Service discovery failed");
+        bridge_log("[BLE] ERROR: Service discovery failed\n");
         [manager close];
         return false;
     }
-    NSLog(@"[BLE] Service discovery succeeded");
+    bridge_log("[BLE] Service discovery succeeded\n");
 
     success = [manager enableNotifications];
     if (!success) {
-        NSLog(@"[BLE] ERROR: Failed to enable notifications");
+        bridge_log("[BLE] ERROR: Failed to enable notifications\n");
         [manager close];
         return false;
     }
-    NSLog(@"[BLE] Notifications enabled, connection fully established");
+    bridge_log("[BLE] Notifications enabled, connection fully established\n");
     
     return true;
 }
@@ -102,7 +102,7 @@ dc_status_t ble_set_timeout(ble_object_t *io, int timeout) {
     [manager setTimeout:timeout];
 
     if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
-        NSLog(@"[BLE TIMEOUT] set_timeout: %d ms -> %d ms", old_timeout, timeout);
+        bridge_log("[BLE TIMEOUT] set_timeout: %d ms -> %d ms\n", old_timeout, timeout);
     }
 
     return DC_STATUS_SUCCESS;
@@ -120,7 +120,7 @@ dc_status_t ble_sleep(ble_object_t *io, unsigned int milliseconds) {
 dc_status_t ble_read(ble_object_t *io, void *buffer, size_t requested, size_t *actual)
 {
     if (!io || !buffer || !actual) {
-        NSLog(@"[BLE READ] ERROR: Invalid arguments (io=%p, buffer=%p, actual=%p)", io, buffer, actual);
+        bridge_log("[BLE READ] ERROR: Invalid arguments (io=%p, buffer=%p, actual=%p)\n", io, buffer, actual);
         return DC_STATUS_INVALIDARGS;
     }
 
@@ -136,8 +136,8 @@ dc_status_t ble_read(ble_object_t *io, void *buffer, size_t requested, size_t *a
         // readDataPartial timed out (3s) returning nil, which we report as IO error.
         // In debug mode, log every occurrence to help correlate with protocol failures.
         if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
-            NSLog(@"[BLE READ] Timeout/empty: readDataPartial returned %@ (requested %zu bytes) -> DC_STATUS_IO",
-                  partialData == nil ? @"nil" : @"empty", requested);
+            bridge_log("[BLE READ] Timeout/empty: readDataPartial returned %s (requested %zu bytes) -> DC_STATUS_IO\n",
+                  partialData == nil ? "nil" : "empty", requested);
         }
         return DC_STATUS_IO;
     }
@@ -156,7 +156,7 @@ dc_status_t ble_write(ble_object_t *io, const void *data, size_t size, size_t *a
         return DC_STATUS_SUCCESS;
     } else {
         *actual = 0;
-        NSLog(@"[BLE WRITE] ERROR: writeData returned false (%zu bytes)", size);
+        bridge_log("[BLE WRITE] ERROR: writeData returned false (%zu bytes)\n", size);
         return DC_STATUS_IO;
     }
 }
