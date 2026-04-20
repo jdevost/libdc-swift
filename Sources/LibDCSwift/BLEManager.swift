@@ -377,13 +377,18 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logDebug("[BLE CLOSE] Starting close(clearDevicePtr: \(clearDevicePtr)) on thread: \(Thread.isMainThread ? "main" : "background"), peripheral: \(peripheral?.name ?? "nil"), state: \(peripheral?.state.rawValue ?? -1)")
         }
         
-        isDisconnecting = true
         // Reset timeout to default for next connection
         self.bleTimeoutMs = -1
-        DispatchQueue.main.async {
+        // isDisconnecting MUST be true before cancelPeripheralConnection so
+        // didDisconnectPeripheral sees it and skips auto-reconnect.  Use sync
+        // (not async) to guarantee ordering, with a main-thread guard to
+        // avoid deadlock.
+        let setFlags = {
+            self.isDisconnecting = true
             self.isPeripheralReady = false
             self.connectedDevice = nil
         }
+        if Thread.isMainThread { setFlags() } else { DispatchQueue.main.sync(execute: setFlags) }
         queue.sync {
             receivedPackets.removeAll()
             partialPacket.removeAll()
@@ -412,7 +417,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if let peripheral = self.peripheral {
             self.writeCharacteristic = nil
             self.notifyCharacteristic = nil
-            self.peripheral = nil
+            DispatchQueue.main.async {
+                self.peripheral = nil
+            }
             centralManager.cancelPeripheralConnection(peripheral)
         }
         
