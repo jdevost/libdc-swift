@@ -201,7 +201,7 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         if Logger.shared.isDebugMode {
             let elapsed = Date().timeIntervalSince(startTime)
-            let writeType = writeCharacteristic?.properties.contains(.write) == true ? "withResponse" : "withoutResponse"
+            let writeType = writeCharacteristic?.properties.contains(.writeWithoutResponse) == true ? "withoutResponse" : "withResponse"
             logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil") (props=\(writeCharacteristic?.properties.rawValue ?? 0), writeType=\(writeType)), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
         }
         
@@ -261,18 +261,16 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
               let characteristic = self.writeCharacteristic else { return false }
 
         // Determine write type based on characteristic properties.
-        // Prefer .withResponse when available — it has built-in BLE flow
-        // control and is required by some protocols (Oceanic/Aqualung i300C).
-        // Only fall back to .withoutResponse when the characteristic does NOT
-        // support .write (e.g. Mares BlueLink Pro data characteristic).
-        let useWithResponse = characteristic.properties.contains(.write)
+        // Prefer .withoutResponse — this is the standard data path for BLE
+        // UART services.  Many devices (e.g. Aqualung i300C / Pelagic) only
+        // process data received via .withoutResponse even when the char also
+        // advertises .write; a .withResponse write succeeds at the ATT level
+        // but the firmware's UART handler never sees it.
+        // Fall back to .withResponse only when .writeWithoutResponse is NOT
+        // supported (e.g. Shearwater characteristics that only have .write).
+        let useWithoutResponse = characteristic.properties.contains(.writeWithoutResponse)
 
-        if useWithResponse {
-            if Logger.shared.isDebugMode {
-                logDebug("[BLE WRITE] withResponse, \(data?.count ?? 0) bytes")
-            }
-            peripheral.writeValue(data, for: characteristic, type: .withResponse)
-        } else {
+        if useWithoutResponse {
             // writeWithoutResponse path — briefly wait for transmit readiness
             if !peripheral.canSendWriteWithoutResponse {
                 let deadline = Date(timeIntervalSinceNow: 0.5)
@@ -291,6 +289,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 logDebug("[BLE WRITE] withoutResponse, canSend=\(peripheral.canSendWriteWithoutResponse), \(data?.count ?? 0) bytes")
             }
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+        } else {
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE WRITE] withResponse, \(data?.count ?? 0) bytes")
+            }
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
         }
         return true
     }
@@ -301,8 +304,14 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // Use the timeout set by libdivecomputer via ble_set_timeout.
         // If timeout is -1 (no timeout set), default to 3s for safety.
         // If timeout is 0, it means "poll" — return immediately if no data.
+        // BLE adapters (e.g. Mares BlueLink Pro) can stall mid-transfer for
+        // several seconds while the link stays up.  The protocol-level timeout
+        // (often 3 s for Mares) is tuned for serial, not BLE.  Enforce a 10 s
+        // floor so transient stalls don't abort an otherwise healthy download.
+        let minBleTimeoutSec: TimeInterval = 10.0
         let effectiveTimeoutMs = self.bleTimeoutMs
-        let timeoutInterval: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
+        let rawTimeout: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
+        let timeoutInterval: TimeInterval = max(rawTimeout, minBleTimeoutSec)
 
         if effectiveTimeoutMs == 0 {
             // Poll mode: check once and return immediately
@@ -367,7 +376,7 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // Timeout - no data received within the configured timeout
         if Logger.shared.isDebugMode {
             let peripheralState = peripheral?.state.rawValue ?? -1
-            logDebug("readDataPartial timeout after \(String(format: "%.1f", timeoutInterval))s (requested \(requestedInt) bytes, configured timeout: \(effectiveTimeoutMs) ms, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
+            logDebug("readDataPartial timeout after \(String(format: "%.1f", timeoutInterval))s (requested \(requestedInt) bytes, protocol timeout: \(effectiveTimeoutMs) ms, effective: \(String(format: "%.1f", timeoutInterval))s, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
         }
         return nil
     }
@@ -585,6 +594,17 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         logInfo("Successfully connected to \(peripheral.name ?? "Unknown Device")")
         peripheral.delegate = self
+
+        // Flush any stale data left over from a previous connection.
+        // A late-arriving notification can sneak into receivedPackets after
+        // close() clears the buffer but before cancelPeripheralConnection
+        // takes effect.  Clearing here guarantees the protocol starts clean.
+        queue.sync {
+            receivedPackets.removeAll()
+            partialPacket.removeAll()
+        }
+        while dataAvailableSemaphore.wait(timeout: .now()) == .success { }
+
         // Set isPeripheralReady synchronously so that callers busy-waiting on
         // this flag (e.g. connectToBLEDevice in BLEBridge.m) see it immediately
         // when the RunLoop processes this callback.  The @Published wrapper will
@@ -595,6 +615,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         logError("Failed to connect to \(peripheral.name ?? "Unknown Device"): \(error?.localizedDescription ?? "No error description")")
+        // Reset state so the app doesn't remain stuck in a connecting state.
+        self.isPeripheralReady = false
+        self.connectedDevice = nil
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
