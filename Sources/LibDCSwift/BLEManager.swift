@@ -407,7 +407,14 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if clearDevicePtr {
             if let devicePtr = self.openedDeviceDataPtr {
                 if devicePtr.pointee.device != nil {
+                    // dc_device_close sends a protocol-level shutdown command
+                    // (e.g. Shearwater "exit command mode" packet).  The BLE
+                    // writeValue call is asynchronous, so we must give the BLE
+                    // stack time to flush the write before tearing down the
+                    // connection.  Without this delay the dive computer never
+                    // receives the shutdown and stays stuck on "WAIT CMD".
                     dc_device_close(devicePtr.pointee.device)
+                    Thread.sleep(forTimeInterval: 0.5)
                 }
                 devicePtr.deallocate()
                 self.openedDeviceDataPtr = nil
