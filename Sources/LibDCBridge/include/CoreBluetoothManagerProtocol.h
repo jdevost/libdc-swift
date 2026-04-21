@@ -14,6 +14,7 @@
 - (NSData *)readDataPartial:(int)requested;
 - (void)setTimeout:(int)timeoutMs;
 - (void)close;
+- (NSString *)getDeviceName;
 @end
 
 #else
