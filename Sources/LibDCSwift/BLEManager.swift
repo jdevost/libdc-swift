@@ -706,16 +706,33 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         }
         
         for characteristic in characteristics {
-            if isWriteCharacteristic(characteristic) {
+            let props = characteristic.properties
+
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE CHARS] service=\(service.uuid.uuidString) char=\(characteristic.uuid.uuidString) props=\(props.rawValue)")
+            }
+
+            // writeChar selection:
+            //   - Prefer .writeWithoutResponse (standard BLE UART data path;
+            //     required by Mares BlueLink Pro and Aqualung i300C).
+            //   - Fall back to .write only if nothing better has been found yet
+            //     (needed for Shearwater, which only exposes .write).
+            // Using "overwrite on wwr match, else first-wins" ensures the
+            // selection is independent of characteristic discovery order.
+            if props.contains(.writeWithoutResponse) {
+                writeCharacteristic = characteristic
+            } else if props.contains(.write), writeCharacteristic == nil {
                 writeCharacteristic = characteristic
             }
-            
-            if isReadCharacteristic(characteristic) {
+
+            // notifyChar: first characteristic that supports notify/indicate wins.
+            // Note: Do NOT call setNotifyValue here — enableNotifications()
+            // is called separately by connectToBLEDevice (BLEBridge.m) after
+            // service discovery completes. Subscribing twice can confuse some
+            // BLE stacks (e.g. Shearwater).
+            if (props.contains(.notify) || props.contains(.indicate)),
+               notifyCharacteristic == nil {
                 notifyCharacteristic = characteristic
-                // Note: Do NOT call setNotifyValue here — enableNotifications()
-                // is called separately by connectToBLEDevice (BLEBridge.m) after
-                // service discovery completes. Subscribing twice can confuse some
-                // BLE stacks (e.g. Shearwater).
             }
         }
     }
