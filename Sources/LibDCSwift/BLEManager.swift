@@ -310,6 +310,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     @objc public func readDataPartial(_ requested: Int32) -> Data? {
         let requestedInt = Int(requested)
         let startTime = Date()
+        // Short-circuit if close() is already in progress.  Without this,
+        // dc_device_close()'s internal shutdown handshake (e.g. Oceanic
+        // "power off" command) can block readDataPartial for a full 30 s
+        // waiting for an ACK the device never sends, delaying the UI.
+        if isDisconnecting {
+            return nil
+        }
         // Use the timeout set by libdivecomputer via ble_set_timeout.
         // If timeout is -1 (no timeout set), default to 3s for safety.
         // If timeout is 0, it means "poll" — return immediately if no data.
