@@ -24,7 +24,7 @@ void freeBLEObject(ble_object_t* obj) {
 
 bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     if (!io || !deviceAddress) {
-        bridge_log("[BLE] Invalid parameters passed to connectToBLEDevice\n");
+        NSLog(@"[BLE] Invalid parameters passed to connectToBLEDevice");
         return false;
     }
     
@@ -32,11 +32,11 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     id<CoreBluetoothManagerProtocol> manager = [CoreBluetoothManagerClass shared];
     NSString *address = [NSString stringWithUTF8String:deviceAddress];
     
-    bridge_log("[BLE] Connecting to device: %s\n", [address UTF8String]);
+    NSLog(@"[BLE] Connecting to device: %@", address);
     
     bool success = [manager connectToDevice:address];
     if (!success) {
-        bridge_log("[BLE] ERROR: connectToDevice returned false\n");
+        NSLog(@"[BLE] ERROR: connectToDevice returned false");
         return false;
     }
     
@@ -45,7 +45,7 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     while ([[NSDate date] compare:timeout] == NSOrderedAscending) {
         // Check if peripheral is ready using protocol method
         if ([manager getPeripheralReadyState]) {
-            bridge_log("[BLE] Peripheral is ready for communication\n");
+            NSLog(@"[BLE] Peripheral is ready for communication");
             break;
         }
         // Small sleep to avoid busy-waiting
@@ -54,26 +54,26 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     
     // Final check if we're actually ready
     if (![manager getPeripheralReadyState]) {
-        bridge_log("[BLE] ERROR: Timeout (10s) waiting for peripheral to be ready\n");
+        NSLog(@"[BLE] ERROR: Timeout (10s) waiting for peripheral to be ready");
         [manager close];
         return false;
     }
 
     success = [manager discoverServices];
     if (!success) {
-        bridge_log("[BLE] ERROR: Service discovery failed\n");
+        NSLog(@"[BLE] ERROR: Service discovery failed");
         [manager close];
         return false;
     }
-    bridge_log("[BLE] Service discovery succeeded\n");
+    NSLog(@"[BLE] Service discovery succeeded");
 
     success = [manager enableNotifications];
     if (!success) {
-        bridge_log("[BLE] ERROR: Failed to enable notifications\n");
+        NSLog(@"[BLE] ERROR: Failed to enable notifications");
         [manager close];
         return false;
     }
-    bridge_log("[BLE] Notifications enabled, connection fully established\n");
+    NSLog(@"[BLE] Notifications enabled, connection fully established");
     
     return true;
 }
@@ -102,13 +102,40 @@ dc_status_t ble_set_timeout(ble_object_t *io, int timeout) {
     [manager setTimeout:timeout];
 
     if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
-        bridge_log("[BLE TIMEOUT] set_timeout: %d ms -> %d ms\n", old_timeout, timeout);
+        NSLog(@"[BLE TIMEOUT] set_timeout: %d ms -> %d ms", old_timeout, timeout);
     }
 
     return DC_STATUS_SUCCESS;
 }
 
 dc_status_t ble_ioctl(ble_object_t *io, unsigned int request, void *data, size_t size) {
+    // DC_IOCTL_BLE_GET_NAME = DC_IOCTL_IOR('b', 0, 0) = 0x40006200
+    // The Oceanic protocol requires the BLE device name to perform a
+    // handshake (extracts the serial number from the name).  Without
+    // this, downloads fail with NAK responses.
+    const unsigned int BLE_GET_NAME = 0x40006200;
+    if (request == BLE_GET_NAME) {
+        if (!data || size == 0) {
+            return DC_STATUS_INVALIDARGS;
+        }
+        Class CoreBluetoothManagerClass = NSClassFromString(@"CoreBluetoothManager");
+        id<CoreBluetoothManagerProtocol> manager = [CoreBluetoothManagerClass shared];
+        NSString *name = [manager getDeviceName];
+        if (!name || name.length == 0) {
+            bridge_log("[BLE IOCTL] GET_NAME: no device name available\n");
+            return DC_STATUS_UNSUPPORTED;
+        }
+        const char *utf8 = [name UTF8String];
+        size_t len = strlen(utf8);
+        if (len >= size) {
+            len = size - 1;
+        }
+        memcpy(data, utf8, len);
+        ((char *)data)[len] = '\0';
+        bridge_log("[BLE IOCTL] GET_NAME: '%s' (%zu bytes)\n", (char *)data, len);
+        return DC_STATUS_SUCCESS;
+    }
+
     return DC_STATUS_UNSUPPORTED;
 }
 
@@ -120,7 +147,7 @@ dc_status_t ble_sleep(ble_object_t *io, unsigned int milliseconds) {
 dc_status_t ble_read(ble_object_t *io, void *buffer, size_t requested, size_t *actual)
 {
     if (!io || !buffer || !actual) {
-        bridge_log("[BLE READ] ERROR: Invalid arguments (io=%p, buffer=%p, actual=%p)\n", io, buffer, actual);
+        NSLog(@"[BLE READ] ERROR: Invalid arguments (io=%p, buffer=%p, actual=%p)", io, buffer, actual);
         return DC_STATUS_INVALIDARGS;
     }
 
@@ -136,8 +163,8 @@ dc_status_t ble_read(ble_object_t *io, void *buffer, size_t requested, size_t *a
         // readDataPartial timed out (3s) returning nil, which we report as IO error.
         // In debug mode, log every occurrence to help correlate with protocol failures.
         if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
-            bridge_log("[BLE READ] Timeout/empty: readDataPartial returned %s (requested %zu bytes) -> DC_STATUS_IO\n",
-                  partialData == nil ? "nil" : "empty", requested);
+            NSLog(@"[BLE READ] Timeout/empty: readDataPartial returned %@ (requested %zu bytes) -> DC_STATUS_IO",
+                  partialData == nil ? @"nil" : @"empty", requested);
         }
         return DC_STATUS_IO;
     }
@@ -156,7 +183,7 @@ dc_status_t ble_write(ble_object_t *io, const void *data, size_t size, size_t *a
         return DC_STATUS_SUCCESS;
     } else {
         *actual = 0;
-        bridge_log("[BLE WRITE] ERROR: writeData returned false (%zu bytes)\n", size);
+        NSLog(@"[BLE WRITE] ERROR: writeData returned false (%zu bytes)", size);
         return DC_STATUS_IO;
     }
 }
