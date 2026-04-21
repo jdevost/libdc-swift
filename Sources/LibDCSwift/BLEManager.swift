@@ -69,6 +69,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
     // MARK: - Private Properties
     private var bleTimeoutMs: Int = -1 // Timeout in ms, -1 means no timeout (use default 3s)
+    /// Becomes `true` on the first BLE notification received on the current
+    /// connection.  Used to gate the 30 s read-timeout floor so that the
+    /// initial handshake with a sleeping adapter fails fast (honouring the
+    /// protocol-level timeout), while mid-transfer reads still survive the
+    /// Mares BlueLink Pro's long stalls.
+    private var hasReceivedData: Bool = false
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
     /// Queue of individual BLE notifications. Each notification is kept as a
@@ -245,7 +251,21 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             let elapsed = Date().timeIntervalSince(startTime)
             logDebug("[BLE NOTIFY] Enabled in \(String(format: "%.2f", elapsed))s")
         }
-        
+
+        // Post-notify settling delay.  Some dive computers (notably the
+        // Aqualung i300C showing "BT PAIR") need a moment between the GATT
+        // subscription and the first vendor-protocol write before they will
+        // accept commands reliably.  The warm-up reads above have already
+        // had time to round-trip during the isNotifying poll, but a brief
+        // additional pause gives the peripheral time to fully transition
+        // out of its advertising/pairing state.  1.5 s is invisible to users
+        // on fast devices and turns a 30-second "BT PAIR" failure into a
+        // successful first connection on sleepy ones.
+        Thread.sleep(forTimeInterval: 1.5)
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE NOTIFY] Post-notify settling delay completed")
+        }
+
         return notifyCharacteristic.isNotifying
     }
 
@@ -323,13 +343,17 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // BLE adapters (e.g. Mares BlueLink Pro) can stall mid-transfer for
         // 10+ seconds while the link stays up.  The protocol-level timeout
         // (often 3 s for Mares, 1 s for Oceanic) is tuned for serial, not
-        // BLE.  Enforce a 30 s floor so transient stalls don't abort an
-        // otherwise healthy download — this matches observed stall duration
-        // in field logs and aligns with other BLE dive-computer clients.
+        // BLE.  Enforce a 30 s floor ONCE DATA HAS STARTED FLOWING so
+        // transient stalls don't abort an otherwise healthy download.
+        //
+        // Before the first packet arrives we honour the protocol timeout
+        // verbatim: if the adapter is asleep/unresponsive (e.g. Aqualung
+        // i300C after auto-disabling Bluetooth), the handshake should fail
+        // in ~1 s rather than making the user wait 30 s to retry.
         let minBleTimeoutSec: TimeInterval = 30.0
         let effectiveTimeoutMs = self.bleTimeoutMs
         let rawTimeout: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
-        let timeoutInterval: TimeInterval = max(rawTimeout, minBleTimeoutSec)
+        let timeoutInterval: TimeInterval = hasReceivedData ? max(rawTimeout, minBleTimeoutSec) : rawTimeout
 
         if effectiveTimeoutMs == 0 {
             // Poll mode: check once and return immediately
@@ -409,6 +433,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         isDisconnecting = true
         // Reset timeout to default for next connection
         self.bleTimeoutMs = -1
+        // Reset first-packet flag so the next connection's handshake
+        // again uses the short protocol-level timeout.
+        self.hasReceivedData = false
         // Clear ready state SYNCHRONOUSLY so that any immediate retry
         // (e.g. open_ble_device_with_identification fallback) sees it.
         // DispatchQueue.main.async would leave isPeripheralReady=true
@@ -726,6 +753,22 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return
         }
         
+        // The Device Information Service (0x180A) is a standard GATT service
+        // exposing manufacturer/model/firmware metadata.  Reading it at connect
+        // time acts as a gentle wake-up for dive computers that advertise but
+        // aren't yet fully ready for the vendor protocol (e.g. Aqualung i300C
+        // stuck on "BT PAIR").  This mirrors what generic BLE clients such as
+        // MacDive and nRF Connect do on connection establishment.
+        if service.uuid == CBUUID(string: "180A") {
+            if Logger.shared.isDebugMode {
+                logDebug("[BLE WARMUP] Reading Device Information Service (0x180A): \(characteristics.count) characteristic(s)")
+            }
+            for characteristic in characteristics where characteristic.properties.contains(.read) {
+                peripheral.readValue(for: characteristic)
+            }
+            return
+        }
+
         // Only accept characteristics from the preferred (known dive-computer)
         // service. Other services (e.g. GATT 0x1801 with Service Changed
         // indicate characteristic) can overwrite the correct write/notify
@@ -765,6 +808,29 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 notifyCharacteristic = characteristic
             }
         }
+
+        // Warm-up read on the vendor service's read-only characteristics.
+        // Many dive-computer vendors expose model/firmware/serial strings on
+        // read-only characteristics that MacDive / nRF Connect read at connect
+        // time; doing the same encourages the device to transition out of its
+        // "just advertising" state and, for peripherals that demand it, lets
+        // iOS silently initiate GATT bonding.  The responses go to
+        // didUpdateValueFor but are ignored because they're not arriving on
+        // the notifyCharacteristic.
+        for characteristic in characteristics {
+            let props = characteristic.properties
+            let isReadOnly = props.contains(.read)
+                && !props.contains(.notify)
+                && !props.contains(.indicate)
+                && !props.contains(.write)
+                && !props.contains(.writeWithoutResponse)
+            if isReadOnly {
+                if Logger.shared.isDebugMode {
+                    logDebug("[BLE WARMUP] Reading vendor char: \(characteristic.uuid.uuidString)")
+                }
+                peripheral.readValue(for: characteristic)
+            }
+        }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -772,7 +838,20 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logError("Error receiving data: \(error.localizedDescription)")
             return
         }
-        
+
+        // Only enqueue data arriving on the active notify characteristic.
+        // Warm-up reads (Device Info Service, vendor read-only chars) and any
+        // other spurious reads must NOT be fed into the protocol stream — they
+        // would corrupt libdivecomputer's packet parsing and prematurely trip
+        // the hasReceivedData flag, defeating the handshake fast-fail.
+        guard let notifyCharacteristic = self.notifyCharacteristic,
+              characteristic.uuid == notifyCharacteristic.uuid else {
+            if Logger.shared.isDebugMode, let value = characteristic.value {
+                logDebug("[BLE WARMUP] Got \(value.count) byte(s) from \(characteristic.uuid.uuidString) (ignored — not the notify char)")
+            }
+            return
+        }
+
         guard let data = characteristic.value else {
             return
         }
@@ -782,6 +861,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             // packet boundaries.  readDataPartial dequeues one at a time.
             receivedPackets.append(data)
         }
+
+        // Flip the first-packet gate so subsequent reads can use the 30 s
+        // stall-survival floor.  Handshake reads (before any data) keep the
+        // short protocol timeout.
+        self.hasReceivedData = true
 
         // Signal that data is available - wake up any waiting read
         dataAvailableSemaphore.signal()
