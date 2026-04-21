@@ -201,8 +201,7 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         if Logger.shared.isDebugMode {
             let elapsed = Date().timeIntervalSince(startTime)
-            let writeType = writeCharacteristic?.properties.contains(.writeWithoutResponse) == true ? "withoutResponse" : "withResponse"
-            logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil") (props=\(writeCharacteristic?.properties.rawValue ?? 0), writeType=\(writeType)), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
+            logDebug("[BLE DISCOVER] Completed in \(String(format: "%.2f", elapsed))s - writeChar: \(writeCharacteristic?.uuid.uuidString ?? "nil"), notifyChar: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
         }
         
         return writeCharacteristic != nil && notifyCharacteristic != nil
@@ -249,6 +248,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         return notifyCharacteristic.isNotifying
     }
     
+    @objc public func getDeviceName() -> String {
+        return peripheral?.name ?? ""
+    }
+
     // MARK: - Data Handling
     /// Unused legacy method — kept for API compatibility.  The packet-queue
     /// approach (`receivedPackets`) replaced the flat-buffer approach.
@@ -260,25 +263,24 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         guard let peripheral = self.peripheral,
               let characteristic = self.writeCharacteristic else { return false }
 
-        // Determine write type based on characteristic properties.
-        // Prefer .withoutResponse — this is the standard data path for BLE
-        // UART services.  Many devices (e.g. Aqualung i300C / Pelagic) only
-        // process data received via .withoutResponse even when the char also
-        // advertises .write; a .withResponse write succeeds at the ATT level
-        // but the firmware's UART handler never sees it.
-        // Fall back to .withResponse only when .writeWithoutResponse is NOT
-        // supported (e.g. Shearwater characteristics that only have .write).
-        let useWithoutResponse = characteristic.properties.contains(.writeWithoutResponse)
-
-        if useWithoutResponse {
-            // writeWithoutResponse path — briefly wait for transmit readiness
+        // If using write-without-response, briefly wait for the peripheral to
+        // signal readiness.  This provides back-pressure when the BLE transmit
+        // buffer is full.  However, we must NOT hard-fail on timeout because
+        // canSendWriteWithoutResponse can get stuck false on some BLE stacks
+        // (e.g. after connection parameter renegotiation) even though the
+        // peripheral is perfectly able to accept data.  In that case we fall
+        // back to writing anyway — CoreBluetooth will buffer internally.
+        if characteristic.properties.contains(.writeWithoutResponse) {
             if !peripheral.canSendWriteWithoutResponse {
+                // Brief wait (up to 500ms) for the transmit buffer to drain
                 let deadline = Date(timeIntervalSinceNow: 0.5)
                 while !peripheral.canSendWriteWithoutResponse {
                     if Date() > deadline {
+                        // Fall through and write anyway — don't hard-fail
                         logWarning("[BLE WRITE] canSendWriteWithoutResponse still false after 500ms, writing anyway (\(data?.count ?? 0) bytes)")
                         break
                     }
+                    // Wait for peripheralIsReady(toSendWriteWithoutResponse:) callback
                     let result = writeReadySemaphore.wait(timeout: .now() + .milliseconds(50))
                     if result == .timedOut {
                         continue
@@ -286,13 +288,10 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 }
             }
             if Logger.shared.isDebugMode {
-                logDebug("[BLE WRITE] withoutResponse, canSend=\(peripheral.canSendWriteWithoutResponse), \(data?.count ?? 0) bytes")
+                logDebug("[BLE WRITE] canSendWriteWithoutResponse=\(peripheral.canSendWriteWithoutResponse), writing \(data?.count ?? 0) bytes")
             }
             peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
         } else {
-            if Logger.shared.isDebugMode {
-                logDebug("[BLE WRITE] withResponse, \(data?.count ?? 0) bytes")
-            }
             peripheral.writeValue(data, for: characteristic, type: .withResponse)
         }
         return true
@@ -305,10 +304,11 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // If timeout is -1 (no timeout set), default to 3s for safety.
         // If timeout is 0, it means "poll" — return immediately if no data.
         // BLE adapters (e.g. Mares BlueLink Pro) can stall mid-transfer for
-        // several seconds while the link stays up.  The protocol-level timeout
-        // (often 3 s for Mares) is tuned for serial, not BLE.  Enforce a 10 s
-        // floor so transient stalls don't abort an otherwise healthy download.
-        let minBleTimeoutSec: TimeInterval = 10.0
+        // 10+ seconds while the link stays up.  The protocol-level timeout
+        // (often 3 s for Mares, 1 s for Oceanic) is tuned for serial, not
+        // BLE.  Enforce a 30 s floor so transient stalls don't abort an
+        // otherwise healthy download.
+        let minBleTimeoutSec: TimeInterval = 30.0
         let effectiveTimeoutMs = self.bleTimeoutMs
         let rawTimeout: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
         let timeoutInterval: TimeInterval = max(rawTimeout, minBleTimeoutSec)
@@ -376,7 +376,7 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // Timeout - no data received within the configured timeout
         if Logger.shared.isDebugMode {
             let peripheralState = peripheral?.state.rawValue ?? -1
-            logDebug("readDataPartial timeout after \(String(format: "%.1f", timeoutInterval))s (requested \(requestedInt) bytes, protocol timeout: \(effectiveTimeoutMs) ms, effective: \(String(format: "%.1f", timeoutInterval))s, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
+            logDebug("readDataPartial timeout after \(String(format: "%.1f", timeoutInterval))s (requested \(requestedInt) bytes, configured timeout: \(effectiveTimeoutMs) ms, peripheral state: \(peripheralState), isRetrievingLogs: \(isRetrievingLogs))")
         }
         return nil
     }
@@ -388,16 +388,18 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logDebug("[BLE CLOSE] Starting close(clearDevicePtr: \(clearDevicePtr)) on thread: \(Thread.isMainThread ? "main" : "background"), peripheral: \(peripheral?.name ?? "nil"), state: \(peripheral?.state.rawValue ?? -1)")
         }
         
-        isDisconnecting = true
         // Reset timeout to default for next connection
         self.bleTimeoutMs = -1
-        // Clear ready state SYNCHRONOUSLY so that any immediate retry
-        // (e.g. open_ble_device_with_identification fallback) sees it.
-        // DispatchQueue.main.async would leave isPeripheralReady=true
-        // for a brief window, causing the retry to skip the connection
-        // wait and fail with "No peripheral available".
-        self.isPeripheralReady = false
-        self.connectedDevice = nil
+        // isDisconnecting MUST be true before cancelPeripheralConnection so
+        // didDisconnectPeripheral sees it and skips auto-reconnect.  Use sync
+        // (not async) to guarantee ordering, with a main-thread guard to
+        // avoid deadlock.
+        let setFlags = {
+            self.isDisconnecting = true
+            self.isPeripheralReady = false
+            self.connectedDevice = nil
+        }
+        if Thread.isMainThread { setFlags() } else { DispatchQueue.main.sync(execute: setFlags) }
         queue.sync {
             receivedPackets.removeAll()
             partialPacket.removeAll()
@@ -416,7 +418,14 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if clearDevicePtr {
             if let devicePtr = self.openedDeviceDataPtr {
                 if devicePtr.pointee.device != nil {
+                    // dc_device_close sends a protocol-level shutdown command
+                    // (e.g. Shearwater "exit command mode" packet).  The BLE
+                    // writeValue call is asynchronous, so we must give the BLE
+                    // stack time to flush the write before tearing down the
+                    // connection.  Without this delay the dive computer never
+                    // receives the shutdown and stays stuck on "WAIT CMD".
                     dc_device_close(devicePtr.pointee.device)
+                    Thread.sleep(forTimeInterval: 0.5)
                 }
                 devicePtr.deallocate()
                 self.openedDeviceDataPtr = nil
@@ -426,8 +435,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         if let peripheral = self.peripheral {
             self.writeCharacteristic = nil
             self.notifyCharacteristic = nil
-            self.preferredService = nil
-            self.peripheral = nil
+            DispatchQueue.main.async {
+                self.peripheral = nil
+            }
             centralManager.cancelPeripheralConnection(peripheral)
         }
         
@@ -459,13 +469,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return false
         }
         
-        // Set peripheral synchronously regardless of thread.
-        // BLEBridge.m calls connectToBLEDevice → connect(toDevice:) from
-        // a background thread, then immediately checks isPeripheralReady
-        // and calls discoverServices().  If we defer the assignment to
-        // main.async, discoverServices() sees self.peripheral == nil and
-        // fails with "No peripheral available".
-        self.peripheral = peripheral
+        if Thread.isMainThread {
+            self.peripheral = peripheral
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.peripheral = peripheral
+            }
+        }
         peripheral.delegate = self
         centralManager.connect(peripheral, options: nil)
         return true  // Return immediately, connection status will be handled by delegate
@@ -531,12 +541,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
     public func systemDisconnect(_ peripheral: CBPeripheral) {
         logInfo("Performing system-level disconnect for \(peripheral.name ?? "Unknown Device")")
-        self.isPeripheralReady = false
-        self.connectedDevice = nil
-        self.writeCharacteristic = nil
-        self.notifyCharacteristic = nil
-        self.preferredService = nil
-        self.peripheral = nil
+        DispatchQueue.main.async {
+            self.isPeripheralReady = false
+            self.connectedDevice = nil
+            self.writeCharacteristic = nil
+            self.notifyCharacteristic = nil
+            self.peripheral = nil
+        }
         centralManager.cancelPeripheralConnection(peripheral)
     }
     
@@ -594,17 +605,6 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         logInfo("Successfully connected to \(peripheral.name ?? "Unknown Device")")
         peripheral.delegate = self
-
-        // Flush any stale data left over from a previous connection.
-        // A late-arriving notification can sneak into receivedPackets after
-        // close() clears the buffer but before cancelPeripheralConnection
-        // takes effect.  Clearing here guarantees the protocol starts clean.
-        queue.sync {
-            receivedPackets.removeAll()
-            partialPacket.removeAll()
-        }
-        while dataAvailableSemaphore.wait(timeout: .now()) == .success { }
-
         // Set isPeripheralReady synchronously so that callers busy-waiting on
         // this flag (e.g. connectToBLEDevice in BLEBridge.m) see it immediately
         // when the RunLoop processes this callback.  The @Published wrapper will
@@ -615,9 +615,6 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         logError("Failed to connect to \(peripheral.name ?? "Unknown Device"): \(error?.localizedDescription ?? "No error description")")
-        // Reset state so the app doesn't remain stuck in a connecting state.
-        self.isPeripheralReady = false
-        self.connectedDevice = nil
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -708,43 +705,17 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return
         }
         
-        // Only accept characteristics from the preferred (known dive-computer)
-        // service. Other services (e.g. GATT 0x1801 with Service Changed
-        // indicate characteristic) can overwrite the correct write/notify
-        // characteristic and cause ATT errors on Mares, Aqualung, etc.
-        if let preferred = preferredService, service.uuid != preferred.uuid {
-            if Logger.shared.isDebugMode {
-                logDebug("[BLE CHARS] Skipping non-preferred service: \(service.uuid.uuidString)")
-            }
-            return
-        }
-        
-        if Logger.shared.isDebugMode {
-            for characteristic in characteristics {
-                logDebug("[BLE CHARS] service=\(service.uuid.uuidString) char=\(characteristic.uuid.uuidString) props=\(characteristic.properties.rawValue)")
-            }
-        }
-        
         for characteristic in characteristics {
-            // Prefer .writeWithoutResponse over .write — Mares BlueLink Pro
-            // has both a data char (.writeWithoutResponse) and a control char
-            // (.write). Writing protocol data to the control char causes an
-            // "Unknown ATT error".
-            if characteristic.properties.contains(.writeWithoutResponse) {
-                writeCharacteristic = characteristic
-            } else if writeCharacteristic == nil && characteristic.properties.contains(.write) {
+            if isWriteCharacteristic(characteristic) {
                 writeCharacteristic = characteristic
             }
             
-            // Prefer .notify over .indicate for the same reason.
-            if characteristic.properties.contains(.notify) {
+            if isReadCharacteristic(characteristic) {
                 notifyCharacteristic = characteristic
                 // Note: Do NOT call setNotifyValue here — enableNotifications()
                 // is called separately by connectToBLEDevice (BLEBridge.m) after
                 // service discovery completes. Subscribing twice can confuse some
                 // BLE stacks (e.g. Shearwater).
-            } else if notifyCharacteristic == nil && characteristic.properties.contains(.indicate) {
-                notifyCharacteristic = characteristic
             }
         }
     }
