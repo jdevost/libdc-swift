@@ -252,20 +252,6 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logDebug("[BLE NOTIFY] Enabled in \(String(format: "%.2f", elapsed))s")
         }
 
-        // Post-notify settling delay.  Some dive computers (notably the
-        // Aqualung i300C showing "BT PAIR") need a moment between the GATT
-        // subscription and the first vendor-protocol write before they will
-        // accept commands reliably.  The warm-up reads above have already
-        // had time to round-trip during the isNotifying poll, but a brief
-        // additional pause gives the peripheral time to fully transition
-        // out of its advertising/pairing state.  1.5 s is invisible to users
-        // on fast devices and turns a 30-second "BT PAIR" failure into a
-        // successful first connection on sleepy ones.
-        Thread.sleep(forTimeInterval: 1.5)
-        if Logger.shared.isDebugMode {
-            logDebug("[BLE NOTIFY] Post-notify settling delay completed")
-        }
-
         return notifyCharacteristic.isNotifying
     }
 
@@ -753,22 +739,6 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             return
         }
         
-        // The Device Information Service (0x180A) is a standard GATT service
-        // exposing manufacturer/model/firmware metadata.  Reading it at connect
-        // time acts as a gentle wake-up for dive computers that advertise but
-        // aren't yet fully ready for the vendor protocol (e.g. Aqualung i300C
-        // stuck on "BT PAIR").  This mirrors what generic BLE clients such as
-        // MacDive and nRF Connect do on connection establishment.
-        if service.uuid == CBUUID(string: "180A") {
-            if Logger.shared.isDebugMode {
-                logDebug("[BLE WARMUP] Reading Device Information Service (0x180A): \(characteristics.count) characteristic(s)")
-            }
-            for characteristic in characteristics where characteristic.properties.contains(.read) {
-                peripheral.readValue(for: characteristic)
-            }
-            return
-        }
-
         // Only accept characteristics from the preferred (known dive-computer)
         // service. Other services (e.g. GATT 0x1801 with Service Changed
         // indicate characteristic) can overwrite the correct write/notify
@@ -809,28 +779,14 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             }
         }
 
-        // Warm-up read on the vendor service's read-only characteristics.
-        // Many dive-computer vendors expose model/firmware/serial strings on
-        // read-only characteristics that MacDive / nRF Connect read at connect
-        // time; doing the same encourages the device to transition out of its
-        // "just advertising" state and, for peripherals that demand it, lets
-        // iOS silently initiate GATT bonding.  The responses go to
-        // didUpdateValueFor but are ignored because they're not arriving on
-        // the notifyCharacteristic.
-        for characteristic in characteristics {
-            let props = characteristic.properties
-            let isReadOnly = props.contains(.read)
-                && !props.contains(.notify)
-                && !props.contains(.indicate)
-                && !props.contains(.write)
-                && !props.contains(.writeWithoutResponse)
-            if isReadOnly {
-                if Logger.shared.isDebugMode {
-                    logDebug("[BLE WARMUP] Reading vendor char: \(characteristic.uuid.uuidString)")
-                }
-                peripheral.readValue(for: characteristic)
-            }
-        }
+        // Note: we intentionally do NOT issue warm-up reads on the vendor
+        // service's read-only characteristics.  On the Aqualung i300C the
+        // 16-byte value exposed on A60B8E5C-...9D65-857BAD95479F appears to
+        // be an authentication nonce; reading it without producing a proper
+        // cryptographic response puts the device into an "awaiting auth"
+        // state where the normal version query (CD 40 00 01 84) is ignored.
+        // If a device-waking mechanism is needed in future it must be
+        // carefully tailored per vendor rather than blanket-reading chars.
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
