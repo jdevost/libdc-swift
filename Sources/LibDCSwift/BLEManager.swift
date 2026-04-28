@@ -231,10 +231,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // Wait for notifications to be enabled with timeout.
         // Use Thread.sleep instead of RunLoop so the main thread stays
         // free to process CoreBluetooth callbacks.
-        let timeout = Date(timeIntervalSinceNow: 5.0)
+        // 30 s gives the user enough time to complete first-time BLE pairing
+        // (entering the passkey shown by iOS on the dive computer).
+        let timeout = Date(timeIntervalSinceNow: 30.0)
         while !notifyCharacteristic.isNotifying {
             if Date() > timeout {
-                logError("Timeout waiting for notifications to enable (5s)")
+                logError("Timeout waiting for notifications to enable (30s)")
                 return false
             }
             Thread.sleep(forTimeInterval: 0.05)
