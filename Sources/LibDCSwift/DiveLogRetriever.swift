@@ -203,7 +203,13 @@ public class DiveLogRetriever {
                 }
 
                 size.pointee = fingerprint.count
-                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: fingerprint.count)
+                // Allocate with C malloc so the matching free() in
+                // close_device_data() (configuredc.c) does not trigger
+                // "pointer being freed was not allocated".  Swift's
+                // UnsafeMutablePointer.allocate uses a different allocator
+                // and produces heap corruption when released with free().
+                guard let raw = malloc(fingerprint.count) else { return nil }
+                let buffer = raw.assumingMemoryBound(to: UInt8.self)
                 fingerprint.copyBytes(to: buffer, count: fingerprint.count)
                 return buffer
             } else {
@@ -215,7 +221,9 @@ public class DiveLogRetriever {
                 }
                 let sentinelFingerprint: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF]
                 size.pointee = sentinelFingerprint.count
-                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: sentinelFingerprint.count)
+                // Allocate with C malloc to match free() in close_device_data().
+                guard let raw = malloc(sentinelFingerprint.count) else { return nil }
+                let buffer = raw.assumingMemoryBound(to: UInt8.self)
                 buffer.initialize(from: sentinelFingerprint, count: sentinelFingerprint.count)
                 return buffer
             }

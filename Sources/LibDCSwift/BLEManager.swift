@@ -94,6 +94,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     private var averageTransferRate: Double = 0
     private var preferredService: CBService?
     private var pendingOperations: [() -> Void] = []
+    /// True once at least one BLE notification has been received from the
+    /// device on the current connection.  Used by `readDataPartial` to apply
+    /// a longer timeout floor (5 s) on the very first read so sleepy devices
+    /// (notably Aqualung i300C) get enough time to respond to the initial
+    /// VERSION query before libdivecomputer's 1 s default fires.
+    private var hasReceivedFirstPacket: Bool = false
     
     // MARK: - Public Properties
     /// Thread-safe access to device data pointer with change notification.
@@ -250,6 +256,17 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         return notifyCharacteristic.isNotifying
     }
     
+    /// Returns the peripheral's advertised Bluetooth name.
+    /// Used by libdivecomputer's DC_IOCTL_BLE_GET_NAME to perform the
+    /// device-name-based handshake required by Oceanic / Aqualung models
+    /// (e.g. i300C, i550C, i770R, i200C), which embed digits of the serial
+    /// number in the advertised name (e.g. "FH020399") and rely on it
+    /// during the READMEMORY command.  Returning an empty string causes
+    /// the dive computer to answer with NAK (0xA5) instead of ACK + data.
+    @objc public func getDeviceName() -> String {
+        return peripheral?.name ?? ""
+    }
+
     // MARK: - Data Handling
     /// Unused legacy method — kept for API compatibility.  The packet-queue
     /// approach (`receivedPackets`) replaced the flat-buffer approach.
@@ -302,7 +319,27 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         // If timeout is -1 (no timeout set), default to 3s for safety.
         // If timeout is 0, it means "poll" — return immediately if no data.
         let effectiveTimeoutMs = self.bleTimeoutMs
-        let timeoutInterval: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
+        var timeoutInterval: TimeInterval = effectiveTimeoutMs <= 0 ? 3.0 : Double(effectiveTimeoutMs) / 1000.0
+        // First-read floor: until we have received at least one notification
+        // on this connection, give the device up to 5 s to answer.
+        //
+        // The Aqualung i300C (and likely other Pelagic OEMs) reliably ignores
+        // the first protocol query after a fresh BLE link is established.
+        // The cure is a connect → fail → reconnect cycle: the second
+        // connection finds the device responsive within ~10 ms.
+        //
+        // The 5 s value is empirically required: shorter floors (2 s) leave
+        // the peripheral in a half-disconnected state when the immediate
+        // reconnect kicks in, causing the second `connectToBLEDevice` to
+        // time out at its 10 s peripheral-ready wait.  5 s gives CoreBluetooth
+        // enough time to release the previous connection cleanly so the
+        // retry lands on a fresh peripheral.
+        //
+        // Once the first packet is in, drop back to libdc's configured
+        // timeout so mid-transfer stalls fail fast as expected.
+        if !hasReceivedFirstPacket && timeoutInterval < 5.0 && effectiveTimeoutMs != 0 {
+            timeoutInterval = 5.0
+        }
 
         if effectiveTimeoutMs == 0 {
             // Poll mode: check once and return immediately
@@ -381,6 +418,13 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
         
         // Reset timeout to default for next connection
         self.bleTimeoutMs = -1
+        // Note: hasReceivedFirstPacket is reset further below, AFTER
+        // free_device_data() runs, so the exit-command read issued during
+        // teardown still benefits from the flag being `true` (set by the
+        // successful download).  Resetting it here would force the exit
+        // command to wait the full 5 s floor on devices that don't ack
+        // their close packet (notably i300C, which auto-disables BT after
+        // a successful sync).
         // isDisconnecting MUST be true before cancelPeripheralConnection so
         // didDisconnectPeripheral sees it and skips auto-reconnect.  Use sync
         // (not async) to guarantee ordering, with a main-thread guard to
@@ -408,17 +452,23 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
         if clearDevicePtr {
             if let devicePtr = self.openedDeviceDataPtr {
+                // Brief delay before teardown so the protocol-level shutdown
+                // command issued inside dc_device_close (e.g. Shearwater
+                // "exit command mode" packet) reaches the dive computer
+                // before we tear down the BLE connection.  Without this the
+                // dive computer can stay stuck on "WAIT CMD".
                 if devicePtr.pointee.device != nil {
-                    // dc_device_close sends a protocol-level shutdown command
-                    // (e.g. Shearwater "exit command mode" packet).  The BLE
-                    // writeValue call is asynchronous, so we must give the BLE
-                    // stack time to flush the write before tearing down the
-                    // connection.  Without this delay the dive computer never
-                    // receives the shutdown and stays stuck on "WAIT CMD".
-                    dc_device_close(devicePtr.pointee.device)
                     Thread.sleep(forTimeInterval: 0.5)
                 }
-                devicePtr.deallocate()
+                // device_data_t was allocated by C calloc() in
+                // open_ble_device_with_identification.  It MUST be freed by
+                // the matching C allocator — never UnsafeMutablePointer
+                // .deallocate(), which uses Swift's allocator and produces
+                // "pointer being freed was not allocated" + heap corruption.
+                // free_device_data also closes the libdc device, iostream
+                // and context, and releases model/fingerprint buffers that
+                // would otherwise leak.
+                free_device_data(devicePtr)
                 self.openedDeviceDataPtr = nil
             }
         }
@@ -431,7 +481,12 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             }
             centralManager.cancelPeripheralConnection(peripheral)
         }
-        
+
+        // Reset first-packet flag here (after teardown) so the next open
+        // re-applies the 5 s floor on its initial read.  See the comment
+        // at the top of close() for why this is deferred.
+        hasReceivedFirstPacket = false
+
         if Logger.shared.isDebugMode {
             let elapsed = Date().timeIntervalSince(closeStartTime)
             logDebug("[BLE CLOSE] Completed in \(String(format: "%.3f", elapsed))s")
@@ -695,18 +750,65 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             logWarning("No characteristics found for service: \(service.uuid)")
             return
         }
-        
+
+        // Only accept characteristics from the preferred (known dive-computer)
+        // service.  Other services such as GATT 0x1801 expose generic
+        // characteristics (e.g. "Service Changed" indicate) that would
+        // otherwise overwrite our real write/notify selection and produce
+        // "Unknown ATT error" on the next protocol write.
+        if let preferred = preferredService, service.uuid != preferred.uuid {
+            return
+        }
+
+        // Two-pass selection.
+        //
+        // Several dive computers expose multiple characteristics with the
+        // same property bits in the same service.  Examples:
+        //
+        //   • Aqualung i300C / Pelagic OEMs:  one .writeWithoutResponse +
+        //     one .write data char, plus an auth-nonce .notify char in
+        //     addition to the protocol-data .notify char.
+        //   • Mares BlueLink Pro: a data channel and a control/config
+        //     channel both with write capability.
+        //
+        // The previous single-pass loop overwrote the selection on every
+        // matching characteristic, so for the i300C we ended up subscribed
+        // to the auth-nonce characteristic (UUID A60B8E5C…) instead of the
+        // data characteristic.  All READMEMORY replies were silently
+        // dropped, producing "Failed to receive the answer" / -6.
+        //
+        // Pass 1: pick the FIRST .writeWithoutResponse / .notify we see.
+        // Pass 2: only if no preferred match was found, fall back to the
+        //         FIRST .write / .indicate characteristic.
         for characteristic in characteristics {
-            if isWriteCharacteristic(characteristic) {
+            if writeCharacteristic == nil &&
+               characteristic.properties.contains(.writeWithoutResponse) {
                 writeCharacteristic = characteristic
             }
-            
-            if isReadCharacteristic(characteristic) {
+            if notifyCharacteristic == nil &&
+               characteristic.properties.contains(.notify) {
                 notifyCharacteristic = characteristic
                 // Note: Do NOT call setNotifyValue here — enableNotifications()
                 // is called separately by connectToBLEDevice (BLEBridge.m) after
                 // service discovery completes. Subscribing twice can confuse some
                 // BLE stacks (e.g. Shearwater).
+            }
+        }
+        for characteristic in characteristics {
+            if writeCharacteristic == nil &&
+               characteristic.properties.contains(.write) {
+                writeCharacteristic = characteristic
+            }
+            if notifyCharacteristic == nil &&
+               characteristic.properties.contains(.indicate) {
+                notifyCharacteristic = characteristic
+            }
+        }
+
+        if Logger.shared.isDebugMode {
+            logDebug("[BLE DISCOVER] Service \(service.uuid) characteristics:")
+            for c in characteristics {
+                logDebug("  - \(c.uuid) props=\(c.properties.rawValue)")
             }
         }
     }
@@ -726,6 +828,9 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             // packet boundaries.  readDataPartial dequeues one at a time.
             receivedPackets.append(data)
         }
+        // Mark that the device has answered at least once so subsequent
+        // reads use libdc's configured timeout (no 5 s first-read floor).
+        hasReceivedFirstPacket = true
 
         // Signal that data is available - wake up any waiting read
         dataAvailableSemaphore.signal()

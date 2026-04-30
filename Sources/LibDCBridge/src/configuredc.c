@@ -221,7 +221,12 @@ static dc_status_t ble_stream_close(dc_iostream_t *iostream)
         printf("[DC_IO CLOSE] ERROR: ble_close returned %d\n", rc);
     }
     freeBLEObject(s->ble_object);
-    free(s);
+    s->ble_object = NULL;
+    // Do NOT free(s) here.  libdivecomputer's dc_iostream_close() calls
+    // this vtable->close() and then immediately calls
+    // dc_iostream_deallocate(iostream) which free()s the same pointer.
+    // Freeing it ourselves causes a double-free and the
+    // "pointer being freed was not allocated" malloc error.
     return rc;
 }
 
@@ -728,4 +733,17 @@ dc_status_t open_ble_device_with_identification(device_data_t **out_data,
     
     *out_data = data;
     return DC_STATUS_SUCCESS;
+}
+
+/*--------------------------------------------------------------------
+ * Public teardown for a device_data_t allocated via calloc() in
+ * open_ble_device_with_identification.  Must be called from the
+ * matching C-side allocator; never use Swift's
+ * UnsafeMutablePointer.deallocate(), which mismatches malloc/free and
+ * trips "pointer being freed was not allocated".
+ *------------------------------------------------------------------*/
+void free_device_data(device_data_t *data) {
+    if (!data) return;
+    close_device_data(data);
+    free(data);
 }

@@ -160,6 +160,19 @@ dc_status_t open_ble_device_with_identification(device_data_t **out_data,
     const char *name, const char *address,
     dc_family_t stored_family, unsigned int stored_model);
 
+/**
+ * Tears down a device_data_t obtained from open_ble_device_with_identification
+ * (or any path that calloc()'s a device_data_t).  Closes the libdivecomputer
+ * device, iostream, context, frees the model and fingerprint buffers, then
+ * free()s the device_data_t itself.  Pass the same allocator the structure
+ * was created with — never call UnsafeMutablePointer.deallocate() on it from
+ * Swift, because device_data_t is allocated via C calloc().
+ *
+ * Safe to call with NULL.  Does not zero the caller's pointer; the caller
+ * is responsible for clearing its reference after this returns.
+ */
+void free_device_data(device_data_t *data);
+
 /*--------------------------------------------------------------------
  * Parser Functions
  *------------------------------------------------------------------*/

@@ -109,6 +109,41 @@ dc_status_t ble_set_timeout(ble_object_t *io, int timeout) {
 }
 
 dc_status_t ble_ioctl(ble_object_t *io, unsigned int request, void *data, size_t size) {
+    // Only DC_IOCTL_BLE_GET_NAME is implemented.  libdivecomputer's
+    // oceanic_atom2_device_open() issues this ioctl during the handshake
+    // for Aqualung / Oceanic / Sherwood models so it can embed the
+    // peripheral's advertised name (e.g. "FH020399") into the READMEMORY
+    // request.  Without it the device answers with NAK (0xA5) and the
+    // download fails before any dive data is read.
+    if (request == DC_IOCTL_BLE_GET_NAME) {
+        if (!data || size == 0) {
+            return DC_STATUS_INVALIDARGS;
+        }
+
+        Class CoreBluetoothManagerClass = NSClassFromString(@"CoreBluetoothManager");
+        id<CoreBluetoothManagerProtocol> manager = [CoreBluetoothManagerClass shared];
+        NSString *name = [manager getDeviceName];
+        if (!name || name.length == 0) {
+            return DC_STATUS_UNSUPPORTED;
+        }
+
+        // libdivecomputer expects a NUL-terminated C string.  Refuse if the
+        // caller's buffer can't hold the name plus terminator.
+        const char *cname = [name UTF8String];
+        size_t needed = strlen(cname) + 1;
+        if (needed > size) {
+            return DC_STATUS_NOMEMORY;
+        }
+
+        memcpy(data, cname, needed);
+
+        if (get_libdc_loglevel() >= DC_LOGLEVEL_DEBUG) {
+            NSLog(@"[BLE IOCTL] GET_NAME: '%@' (%zu bytes)", name, needed - 1);
+        }
+
+        return DC_STATUS_SUCCESS;
+    }
+
     return DC_STATUS_UNSUPPORTED;
 }
 

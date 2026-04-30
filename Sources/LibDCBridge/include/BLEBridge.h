@@ -17,6 +17,7 @@
 
 #include "libdivecomputer/common.h"
 #include "libdivecomputer/iostream.h"
+#include "libdivecomputer/ble.h"
 #include "libdivecomputer/custom.h"
 #include "libdivecomputer/parser.h"
 #include "configuredc.h"
