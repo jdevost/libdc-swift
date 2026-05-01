@@ -684,11 +684,16 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
             if !self.isDisconnecting && !self.isRetrievingLogs && !self.isConnecting {
                 // Attempt to reconnect if this was a stored device
                 if let storedDevice = DeviceStorage.shared.getStoredDevice(uuid: peripheral.identifier.uuidString) {
-                    logInfo("Attempting to reconnect to stored device")
-                    _ = DeviceConfiguration.openBLEDevice(
-                        name: storedDevice.name,
-                        deviceAddress: storedDevice.uuid
-                    )
+                    logInfo("Attempting to reconnect to stored device after brief delay")
+                    // 500 ms delay gives CoreBluetooth and the dive computer time to tear
+                    // down the previous connection. Without this, sleepy devices (i300C)
+                    // can fail the second connect with a 10 s peripheral-ready timeout.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        _ = DeviceConfiguration.openBLEDevice(
+                            name: storedDevice.name,
+                            deviceAddress: storedDevice.uuid
+                        )
+                    }
                 }
             } else if self.isRetrievingLogs {
                 logWarning("⚠️ Disconnected during download - NOT auto-reconnecting to avoid race condition")

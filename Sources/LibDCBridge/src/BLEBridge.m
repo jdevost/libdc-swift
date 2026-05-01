@@ -41,7 +41,9 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     }
     
     // Wait for connection to complete by checking peripheral ready state
-    NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:10.0]; // 10 second timeout
+    // 30 s gives the user enough time to accept first-time iOS BLE pairing dialogs.
+    // The pairing dialog blocks didConnect from firing until the user taps "Pair".
+    NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:30.0]; // 30 second timeout
     while ([[NSDate date] compare:timeout] == NSOrderedAscending) {
         // Check if peripheral is ready using protocol method
         if ([manager getPeripheralReadyState]) {
@@ -54,7 +56,7 @@ bool connectToBLEDevice(ble_object_t *io, const char *deviceAddress) {
     
     // Final check if we're actually ready
     if (![manager getPeripheralReadyState]) {
-        NSLog(@"[BLE] ERROR: Timeout (10s) waiting for peripheral to be ready");
+        NSLog(@"[BLE] ERROR: Timeout (30s) waiting for peripheral to be ready");
         [manager close];
         return false;
     }
