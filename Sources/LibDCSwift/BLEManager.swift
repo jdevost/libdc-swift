@@ -411,6 +411,15 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
     
     // MARK: - Device Management
     @objc public func close(clearDevicePtr: Bool = false) {
+        // Guard against re-entrant calls. free_device_data() closes the
+        // libdivecomputer iostream, whose close callback invokes this
+        // method again with clearDevicePtr=false. Without this guard the
+        // inner call schedules its own asyncAfter that resets
+        // isDisconnecting to false before didDisconnectPeripheral runs,
+        // causing spurious auto-reconnect.
+        if isDisconnecting {
+            return
+        }
         let closeStartTime = Date()
         if Logger.shared.isDebugMode {
             logDebug("[BLE CLOSE] Starting close(clearDevicePtr: \(clearDevicePtr)) on thread: \(Thread.isMainThread ? "main" : "background"), peripheral: \(peripheral?.name ?? "nil"), state: \(peripheral?.state.rawValue ?? -1)")
@@ -452,14 +461,6 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
 
         if clearDevicePtr {
             if let devicePtr = self.openedDeviceDataPtr {
-                // Brief delay before teardown so the protocol-level shutdown
-                // command issued inside dc_device_close (e.g. Shearwater
-                // "exit command mode" packet) reaches the dive computer
-                // before we tear down the BLE connection.  Without this the
-                // dive computer can stay stuck on "WAIT CMD".
-                if devicePtr.pointee.device != nil {
-                    Thread.sleep(forTimeInterval: 0.5)
-                }
                 // device_data_t was allocated by C calloc() in
                 // open_ble_device_with_identification.  It MUST be freed by
                 // the matching C allocator — never UnsafeMutablePointer
@@ -468,7 +469,19 @@ public class CoreBluetoothManager: NSObject, CoreBluetoothManagerProtocol, Obser
                 // free_device_data also closes the libdc device, iostream
                 // and context, and releases model/fingerprint buffers that
                 // would otherwise leak.
+                // Check before free — pointer is invalid after free_device_data.
+                let hadDevice = devicePtr.pointee.device != nil
                 free_device_data(devicePtr)
+                // dc_device_close (called inside free_device_data) sends a
+                // protocol-level shutdown command (e.g. Shearwater "exit
+                // command mode" packet).  The BLE writeValue is asynchronous,
+                // so we must give the BLE stack time to flush the write
+                // before cancelPeripheralConnection tears down the link.
+                // Without this delay the dive computer never receives the
+                // shutdown and stays stuck on "Sending Dive" / "WAIT CMD".
+                if hadDevice {
+                    Thread.sleep(forTimeInterval: 0.5)
+                }
                 self.openedDeviceDataPtr = nil
             }
         }
