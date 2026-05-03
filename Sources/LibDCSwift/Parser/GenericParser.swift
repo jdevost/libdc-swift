@@ -281,6 +281,8 @@ public class GenericParser {
                     events.append(.safetyStop(mandatory: true))
                 case SAMPLE_EVENT_CEILING.rawValue:
                     events.append(.ceiling)
+                case SAMPLE_EVENT_PO2.rawValue:
+                    events.append(.po2)
                 case SAMPLE_EVENT_DEEPSTOP.rawValue:
                     events.append(.deepStop)
                 default:
