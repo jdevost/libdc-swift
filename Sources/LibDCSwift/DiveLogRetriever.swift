@@ -192,11 +192,6 @@ public class DiveLogRetriever {
             }
              
              if let fingerprint = viewModel.getFingerprint(forDeviceType: typeStr, serial: serialStr) {
-                // Sanity check: Shearwater fingerprints should be exactly 4 bytes
-                if fingerprint.count != 4 {
-                    logWarning("⚠️ Fingerprint size mismatch! Expected 4 bytes, got \(fingerprint.count)")
-                }
-
                 if Logger.shared.isDebugMode {
                     let hexStr = fingerprint.map { String(format: "%02x", $0) }.joined()
                     logDebug("[FINGERPRINT-LOOKUP] Returning stored fingerprint: \(hexStr) (\(fingerprint.count) bytes)")
@@ -213,19 +208,18 @@ public class DiveLogRetriever {
                 fingerprint.copyBytes(to: buffer, count: fingerprint.count)
                 return buffer
             } else {
-                // No stored fingerprint - return a sentinel value (0xFFFFFFFF) that won't match any real dive
-                // This is necessary because libdivecomputer defaults to 0x00000000 if no fingerprint is set,
-                // which could accidentally match a dive with fingerprint 0x00000000 and stop enumeration
+                // No stored fingerprint — return nil so the C bridge skips dc_device_set_fingerprint
+                // entirely. The bridge checks (fingerprint && fsize > 0) before calling set_fingerprint,
+                // so returning nil/0 is safe and lets libdivecomputer download all dives on first sync.
+                // Previously a 4-byte 0xFFFFFFFF sentinel was returned here, but that caused
+                // DC_STATUS_INVALIDARGS (-2) on devices with fingerprint sizes other than 4 bytes
+                // (e.g. Oceanic/Aqualung Atom2 family requires 8 bytes), preventing fingerprinting
+                // from ever working on those devices.
                 if Logger.shared.isDebugMode {
-                    logDebug("[FINGERPRINT-LOOKUP] No stored fingerprint found, returning sentinel 0xFFFFFFFF")
+                    logDebug("[FINGERPRINT-LOOKUP] No stored fingerprint found — skipping set_fingerprint")
                 }
-                let sentinelFingerprint: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF]
-                size.pointee = sentinelFingerprint.count
-                // Allocate with C malloc to match free() in close_device_data().
-                guard let raw = malloc(sentinelFingerprint.count) else { return nil }
-                let buffer = raw.assumingMemoryBound(to: UInt8.self)
-                buffer.initialize(from: sentinelFingerprint, count: sentinelFingerprint.count)
-                return buffer
+                size.pointee = 0
+                return nil
             }
         } else {
             logWarning("⚠️ Fingerprint lookup called with nil device type or serial")
