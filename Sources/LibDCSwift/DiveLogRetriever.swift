@@ -234,6 +234,7 @@ public class DiveLogRetriever {
             device: CBPeripheral,
             viewModel: DiveDataViewModel,
             bluetoothManager: CoreBluetoothManager,
+            syncClock: Bool = false,
             onProgress: ((Int, Int) -> Void)? = nil,
             completion: @escaping (Bool) -> Void
         ) {
@@ -342,6 +343,42 @@ public class DiveLogRetriever {
                 }
 
                 progressTimer.cancel()
+
+                // Attempt to sync the device clock to system time while the
+                // BLE session is still open. DC_STATUS_UNSUPPORTED is normal
+                // for devices that don't implement timesync — treat it silently.
+                // Also runs on the fingerprint-match path (DC_STATUS_PROTOCOL +
+                // fingerprintMatched) so routine "no new dives" syncs still update the clock.
+                let clockSyncAllowed = enumStatus == DC_STATUS_SUCCESS
+                    || (enumStatus == DC_STATUS_PROTOCOL && context.fingerprintMatched)
+                if syncClock && clockSyncAllowed {
+                    let now = Date()
+                    let comps = Calendar(identifier: .gregorian).dateComponents(
+                        in: TimeZone.current, from: now
+                    )
+                    if let year = comps.year, let month = comps.month, let day = comps.day,
+                       let hour = comps.hour, let minute = comps.minute, let second = comps.second {
+                        var dt = dc_datetime_t()
+                        dt.year     = Int32(year)
+                        dt.month    = Int32(month)
+                        dt.day      = Int32(day)
+                        dt.hour     = Int32(hour)
+                        dt.minute   = Int32(minute)
+                        dt.second   = Int32(second)
+                        dt.timezone = Int32(TimeZone.current.secondsFromGMT(for: now) / 60)
+                        let clockStatus = dc_device_timesync(dcDevice, &dt)
+                        switch clockStatus {
+                        case DC_STATUS_SUCCESS:
+                            logInfo("✅ Device clock synced to system time")
+                        case DC_STATUS_UNSUPPORTED:
+                            logInfo("ℹ️ This device does not support clock synchronisation")
+                        default:
+                            logWarning("⚠️ Clock sync failed with status: \(clockStatus.rawValue)")
+                        }
+                    } else {
+                        logWarning("⚠️ Clock sync skipped: could not extract date components")
+                    }
+                }
 
                 DispatchQueue.main.async {
                     // Determine the outcome of the download
