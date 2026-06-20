@@ -55,12 +55,14 @@ import LibDCBridge
         ComputerModel(name: "Scubapro Luna 2.0 AI", family: .uwatecSmart, modelID: 0x50),
         
         // Heinrichs Weikamp computers
-        ComputerModel(name: "Heinrichs Weikamp OSTC 3", family: .hwOstc3, modelID: 0x0A),
-        ComputerModel(name: "Heinrichs Weikamp OSTC 4", family: .hwOstc3, modelID: 0x3B),
-        ComputerModel(name: "Heinrichs Weikamp OSTC Plus", family: .hwOstc3, modelID: 0x13),
         ComputerModel(name: "Heinrichs Weikamp OSTC 2", family: .hwOstc3, modelID: 0x11),
-        ComputerModel(name: "Heinrichs Weikamp OSTC Sport", family: .hwOstc3, modelID: 0x12),
         ComputerModel(name: "Heinrichs Weikamp OSTC 2 TR", family: .hwOstc3, modelID: 0x33),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 3", family: .hwOstc3, modelID: 0x0A),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 4", family: .hwOstc3, modelID: 0x43),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 5", family: .hwOstc3, modelID: 0x44),
+        ComputerModel(name: "Heinrichs Weikamp OSTC Nano", family: .hwOstc3, modelID: 0x00),
+        ComputerModel(name: "Heinrichs Weikamp OSTC Plus", family: .hwOstc3, modelID: 0x13),
+        ComputerModel(name: "Heinrichs Weikamp OSTC Sport", family: .hwOstc3, modelID: 0x12),
         
         // Oceanic / Aeris / Sherwood / Hollis computers
         ComputerModel(name: "Oceanic Geo 4.0", family: .oceanicAtom2, modelID: 0x4653),
@@ -91,6 +93,7 @@ import LibDCBridge
         ComputerModel(name: "Mares Quad 2", family: .maresIconHD, modelID: 0x32),
         ComputerModel(name: "Mares Smart Air", family: .maresIconHD, modelID: 0x24),
         ComputerModel(name: "Mares Sirius", family: .maresIconHD, modelID: 0x2F),
+        ComputerModel(name: "Mares Sirius L", family: .maresIconHD, modelID: 0x33),
         ComputerModel(name: "Mares Puck Air 2", family: .maresIconHD, modelID: 0x2D),
         ComputerModel(name: "Mares Genius", family: .maresIconHD, modelID: 0x1C),
         ComputerModel(name: "Mares Puck 4", family: .maresIconHD, modelID: 0x35),
@@ -127,6 +130,9 @@ import LibDCBridge
         ComputerModel(name: "Ratio iDive Color Easy", family: .diveSystem, modelID: 0x52),
         ComputerModel(name: "Ratio iDive Color Free", family: .diveSystem, modelID: 0x50),
         ComputerModel(name: "Ratio iDive Color Deep", family: .diveSystem, modelID: 0x54),
+
+        // Seac computers
+        ComputerModel(name: "Seac Tablet", family: .seacScreen, modelID: 0x10),
     ]
 
     /// Represents the family of dive computers that support BLE communication.
@@ -145,7 +151,8 @@ import LibDCBridge
         case divesoftFreedom
         case cressiGoa
         case diveSystem
-        
+        case seacScreen
+
         /// Converts the Swift enum to libdivecomputer's dc_family_t type
         public var asDCFamily: dc_family_t {
             switch self {
@@ -163,9 +170,10 @@ import LibDCBridge
             case .divesoftFreedom: return DC_FAMILY_DIVESOFT_FREEDOM
             case .cressiGoa: return DC_FAMILY_CRESSI_GOA
             case .diveSystem: return DC_FAMILY_DIVESYSTEM_IDIVE
+            case .seacScreen: return DC_FAMILY_SEAC_SCREEN
             }
         }
-        
+
         /// Creates a DeviceFamily instance from libdivecomputer's dc_family_t type
         init?(dcFamily: dc_family_t) {
             switch dcFamily {
@@ -183,6 +191,7 @@ import LibDCBridge
             case DC_FAMILY_DIVESOFT_FREEDOM: self = .divesoftFreedom
             case DC_FAMILY_CRESSI_GOA: self = .cressiGoa
             case DC_FAMILY_DIVESYSTEM_IDIVE: self = .diveSystem
+            case DC_FAMILY_SEAC_SCREEN: self = .seacScreen
             default: return nil
             }
         }
@@ -482,6 +491,7 @@ import LibDCBridge
     private static let bleNamePrefixes: [(prefix: String, family: DeviceFamily, modelID: UInt32)] = [
         // Mares - BLE advertisement names
         ("Mares Genius", .maresIconHD, 0x1C),
+        ("Sirius L",     .maresIconHD, 0x33),
         ("Sirius",       .maresIconHD, 0x2F),
         ("Quad Ci",      .maresIconHD, 0x31),
         ("Quad Air",     .maresIconHD, 0x23),
