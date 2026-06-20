@@ -55,14 +55,15 @@ import LibDCBridge
         ComputerModel(name: "Scubapro Luna 2.0 AI", family: .uwatecSmart, modelID: 0x50),
         
         // Heinrichs Weikamp computers
-        ComputerModel(name: "Heinrichs Weikamp OSTC 2", family: .hwOstc3, modelID: 0x11),
-        ComputerModel(name: "Heinrichs Weikamp OSTC 2 TR", family: .hwOstc3, modelID: 0x33),
-        ComputerModel(name: "Heinrichs Weikamp OSTC 3", family: .hwOstc3, modelID: 0x0A),
-        ComputerModel(name: "Heinrichs Weikamp OSTC 4", family: .hwOstc3, modelID: 0x43),
-        ComputerModel(name: "Heinrichs Weikamp OSTC 5", family: .hwOstc3, modelID: 0x44),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 2",    family: .hwOstc3, modelID: 0x00),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 2 TR", family: .hwOstc3, modelID: 0x00),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 3",    family: .hwOstc3, modelID: 0x00),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 4",    family: .hwOstc3, modelID: 0x43),
+        ComputerModel(name: "Heinrichs Weikamp OSTC 5",    family: .hwOstc3, modelID: 0x44),
+        ComputerModel(name: "Heinrichs Weikamp OSTC cR",   family: .hwOstc3, modelID: 0x00),
         ComputerModel(name: "Heinrichs Weikamp OSTC Nano", family: .hwOstc3, modelID: 0x00),
-        ComputerModel(name: "Heinrichs Weikamp OSTC Plus", family: .hwOstc3, modelID: 0x13),
-        ComputerModel(name: "Heinrichs Weikamp OSTC Sport", family: .hwOstc3, modelID: 0x12),
+        ComputerModel(name: "Heinrichs Weikamp OSTC Plus", family: .hwOstc3, modelID: 0x00),
+        ComputerModel(name: "Heinrichs Weikamp OSTC Sport", family: .hwOstc3, modelID: 0x00),
         
         // Oceanic / Aeris / Sherwood / Hollis computers
         ComputerModel(name: "Oceanic Geo 4.0", family: .oceanicAtom2, modelID: 0x4653),
@@ -133,6 +134,10 @@ import LibDCBridge
 
         // Seac computers
         ComputerModel(name: "Seac Tablet", family: .seacScreen, modelID: 0x10),
+
+        // Halcyon computers
+        ComputerModel(name: "Halcyon Symbios HUD",     family: .halcyonSymbios, modelID: 1),
+        ComputerModel(name: "Halcyon Symbios Handset", family: .halcyonSymbios, modelID: 7),
     ]
 
     /// Represents the family of dive computers that support BLE communication.
@@ -152,6 +157,7 @@ import LibDCBridge
         case cressiGoa
         case diveSystem
         case seacScreen
+        case halcyonSymbios
 
         /// Converts the Swift enum to libdivecomputer's dc_family_t type
         public var asDCFamily: dc_family_t {
@@ -171,6 +177,7 @@ import LibDCBridge
             case .cressiGoa: return DC_FAMILY_CRESSI_GOA
             case .diveSystem: return DC_FAMILY_DIVESYSTEM_IDIVE
             case .seacScreen: return DC_FAMILY_SEAC_SCREEN
+            case .halcyonSymbios: return DC_FAMILY_HALCYON_SYMBIOS
             }
         }
 
@@ -192,6 +199,7 @@ import LibDCBridge
             case DC_FAMILY_CRESSI_GOA: self = .cressiGoa
             case DC_FAMILY_DIVESYSTEM_IDIVE: self = .diveSystem
             case DC_FAMILY_SEAC_SCREEN: self = .seacScreen
+            case DC_FAMILY_HALCYON_SYMBIOS: self = .halcyonSymbios
             default: return nil
             }
         }
@@ -509,6 +517,8 @@ import LibDCBridge
         ("Smart Apnea",  .maresIconHD, 0x000010),
         ("Smart",        .maresIconHD, 0x000010),
         ("Mares bluelink pro", .maresIconHD, 0x000010),
+        // Seac - BLE advertisement names (dc_filter_seac matches "Tablet" prefix)
+        ("Tablet",             .seacScreen,  0x10),
     ]
     
     /// Resolves BLE names using the prefix mapping table.
