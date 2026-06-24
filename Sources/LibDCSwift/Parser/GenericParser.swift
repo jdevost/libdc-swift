@@ -346,7 +346,35 @@ public class GenericParser {
                 )
                 
             case DC_SAMPLE_GASMIX:
-                wrapper.data.gasmix = Int(value.gasmix)
+                let newGasMix = Int(value.gasmix)
+                if let previousGas = wrapper.data.gasmix, newGasMix != previousGas {
+                    // Gas mix changed mid-dive — synthesize a gasChange event point at this timestamp
+                    let ndl = wrapper.data.deco?.type == DC_DECO_NDL ? wrapper.data.deco?.time : nil
+                    let decoStop = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.depth : nil
+                    let decoTime = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.time : nil
+                    let tts = wrapper.data.deco?.tts
+                    let gasChangePoint = DiveProfilePoint(
+                        time: wrapper.data.time,
+                        depth: wrapper.data.depth,
+                        temperature: wrapper.data.temperature,
+                        pressure: wrapper.data.pressure.last?.value,
+                        pressures: wrapper.data.currentPressures,
+                        po2: wrapper.data.ppo2.last?.value,
+                        events: [.gasChange],
+                        ndl: ndl,
+                        decoStop: decoStop,
+                        decoTime: decoTime,
+                        tts: tts,
+                        currentGas: newGasMix,
+                        cns: wrapper.data.cns,
+                        rbt: wrapper.data.rbt,
+                        heartbeat: wrapper.data.heartbeat,
+                        bearing: wrapper.data.bearing,
+                        setpoint: wrapper.data.setpoint
+                    )
+                    wrapper.data.profile.append(gasChangePoint)
+                }
+                wrapper.data.gasmix = newGasMix
                 
             default:
                 break
