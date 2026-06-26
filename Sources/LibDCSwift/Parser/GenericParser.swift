@@ -346,35 +346,51 @@ public class GenericParser {
                 )
                 
             case DC_SAMPLE_GASMIX:
+                let gasMixUnknown = Int(UInt32.max)
                 let newGasMix = Int(value.gasmix)
-                if let previousGas = wrapper.data.gasmix, newGasMix != previousGas {
-                    // Gas mix changed mid-dive — synthesize a gasChange event point at this timestamp
-                    let ndl = wrapper.data.deco?.type == DC_DECO_NDL ? wrapper.data.deco?.time : nil
-                    let decoStop = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.depth : nil
-                    let decoTime = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.time : nil
-                    let tts = wrapper.data.deco?.tts
-                    let gasChangePoint = DiveProfilePoint(
-                        time: wrapper.data.time,
-                        depth: wrapper.data.depth,
-                        temperature: wrapper.data.temperature,
-                        pressure: wrapper.data.pressure.last?.value,
-                        pressures: wrapper.data.currentPressures,
-                        po2: wrapper.data.ppo2.last?.value,
-                        events: [.gasChange],
-                        ndl: ndl,
-                        decoStop: decoStop,
-                        decoTime: decoTime,
-                        tts: tts,
-                        currentGas: newGasMix,
-                        cns: wrapper.data.cns,
-                        rbt: wrapper.data.rbt,
-                        heartbeat: wrapper.data.heartbeat,
-                        bearing: wrapper.data.bearing,
-                        setpoint: wrapper.data.setpoint
-                    )
-                    wrapper.data.profile.append(gasChangePoint)
+                // Synthesize a gasChange event when the active gas mix changes.
+                // Skip DC_GASMIX_UNKNOWN (0xFFFFFFFF) which Shearwater sends for tanks without AI transmitters.
+                if newGasMix != gasMixUnknown,
+                   let previousGas = wrapper.data.gasmix,
+                   newGasMix != previousGas {
+                    // Dedup: some computers emit both SAMPLE_EVENT_GASCHANGE and DC_SAMPLE_GASMIX
+                    // at the same timestamp. If the previous synthesized point at this time already
+                    // carries a .gasChange event, skip — it has already been covered.
+                    let alreadyHasGasChangeAtThisTime =
+                        wrapper.data.profile.last?.time == wrapper.data.time &&
+                        wrapper.data.profile.last?.events.contains(.gasChange) == true
+                    if !alreadyHasGasChangeAtThisTime {
+                        let ndl = wrapper.data.deco?.type == DC_DECO_NDL ? wrapper.data.deco?.time : nil
+                        let decoStop = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.depth : nil
+                        let decoTime = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.time : nil
+                        let tts = wrapper.data.deco?.tts
+                        let point = DiveProfilePoint(
+                            time: wrapper.data.time,
+                            depth: wrapper.data.depth,
+                            temperature: wrapper.data.temperature,
+                            pressure: wrapper.data.pressure.last?.value,
+                            pressures: wrapper.data.currentPressures,
+                            po2: wrapper.data.ppo2.last?.value,
+                            events: [.gasChange],
+                            ndl: ndl,
+                            decoStop: decoStop,
+                            decoTime: decoTime,
+                            tts: tts,
+                            currentGas: newGasMix,
+                            cns: wrapper.data.cns,
+                            rbt: wrapper.data.rbt,
+                            heartbeat: wrapper.data.heartbeat,
+                            bearing: wrapper.data.bearing,
+                            setpoint: wrapper.data.setpoint
+                        )
+                        wrapper.data.profile.append(point)
+                    }
                 }
-                wrapper.data.gasmix = newGasMix
+                // Only update the previous-gas tracker when the new mix is real —
+                // don't poison it with DC_GASMIX_UNKNOWN.
+                if newGasMix != gasMixUnknown {
+                    wrapper.data.gasmix = newGasMix
+                }
                 
             default:
                 break
