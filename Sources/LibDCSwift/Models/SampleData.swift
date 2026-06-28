@@ -41,7 +41,8 @@ public struct SampleData {
     var decoModel: DiveData.DecoModel? // Decompression model
     
     // Location data
-    var location: DiveData.Location?    // GPS location if available
+    var location: DiveData.Location?    // GPS entry location (first fix)
+    var exitLocation: DiveData.Location? // GPS exit location (last of 2+ fixes; nil if only one fix)
     
     // Additional sensor data
     var rbt: UInt32?                    // Remaining bottom time

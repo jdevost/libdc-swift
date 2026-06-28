@@ -152,6 +152,7 @@ struct shearwater_predator_parser_t {
 	unsigned int opening[NRECORDS];
 	unsigned int closing[NRECORDS];
 	unsigned int final;
+	unsigned int nsamples;
 	unsigned int ngasmixes;
 	unsigned int ntanks;
 	shearwater_predator_gasmix_t gasmix[NGASMIXES];
@@ -418,6 +419,7 @@ shearwater_predator_parser_cache (shearwater_predator_parser_t *parser)
 		}
 	}
 
+	unsigned int nsamples = 0;
 	unsigned int offset = headersize;
 	unsigned int length = size - footersize;
 	while (offset + parser->samplesize <= length) {
@@ -432,6 +434,9 @@ shearwater_predator_parser_cache (shearwater_predator_parser_t *parser)
 
 		if (type == LOG_RECORD_DIVE_SAMPLE ||
 			type == LOG_RECORD_AVELO_SAMPLE) {
+			// Number of samples.
+			nsamples++;
+
 			// Status flags.
 			unsigned int status = 0;
 			unsigned int ccr = 0;
@@ -739,6 +744,7 @@ shearwater_predator_parser_cache (shearwater_predator_parser_t *parser)
 			parser->tankidx[i] = UNDEFINED;
 		}
 	}
+	parser->nsamples = nsamples;
 	parser->aimode = aimode;
 	parser->hpccr = hpccr;
 	parser->divemode = divemode;
@@ -764,14 +770,11 @@ shearwater_predator_parser_get_field (dc_parser_t *abstract, dc_field_type_t typ
 
 	unsigned int decomodel_idx = parser->pnf ? parser->opening[2] + 18 : 67;
 	unsigned int gf_idx        = parser->pnf ? parser->opening[0] +  4 : 4;
-	int latitude = 0, longitude = 0;
-	unsigned int gnss = 0;
 
 	dc_gasmix_t *gasmix = (dc_gasmix_t *) value;
 	dc_tank_t *tank = (dc_tank_t *) value;
 	dc_salinity_t *water = (dc_salinity_t *) value;
 	dc_decomodel_t *decomodel = (dc_decomodel_t *) value;
-	dc_location_t *location = (dc_location_t *) value;
 
 	if (value) {
 		switch (type) {
@@ -880,18 +883,6 @@ shearwater_predator_parser_get_field (dc_parser_t *abstract, dc_field_type_t typ
 				return DC_STATUS_DATAFORMAT;
 			}
 			break;
-		case DC_FIELD_LOCATION:
-			if (parser->opening[9] == UNDEFINED || parser->logversion < 17)
-				return DC_STATUS_UNSUPPORTED;
-			gnss = data[parser->opening[9] + 16];
-			latitude  = (signed int) array_uint32_be (data + parser->opening[9] + 21);
-			longitude = (signed int) array_uint32_be (data + parser->opening[9] + 25);
-			if (gnss != GNSS_FIX_2D && gnss != GNSS_FIX_3D)
-				return DC_STATUS_UNSUPPORTED;
-			location->latitude  = latitude  / 100000.0;
-			location->longitude = longitude / 100000.0;
-			location->altitude  = 0.0;
-			break;
 		default:
 			return DC_STATUS_UNSUPPORTED;
 		}
@@ -924,6 +915,7 @@ shearwater_predator_parser_samples_foreach (dc_parser_t *abstract, dc_sample_cal
 		interval = array_uint16_be (data + parser->opening[5] + 23);
 	}
 
+	unsigned int nsamples = 0;
 	unsigned int pnf = parser->pnf;
 	unsigned int offset = parser->headersize;
 	unsigned int length = size - parser->footersize;
@@ -941,6 +933,9 @@ shearwater_predator_parser_samples_foreach (dc_parser_t *abstract, dc_sample_cal
 
 		if (type == LOG_RECORD_DIVE_SAMPLE ||
 			type == LOG_RECORD_AVELO_SAMPLE) {
+			// Number of samples.
+			nsamples++;
+
 			// Time (seconds).
 			time += interval;
 			sample.time = time;
@@ -1088,6 +1083,21 @@ shearwater_predator_parser_samples_foreach (dc_parser_t *abstract, dc_sample_cal
 				if (data[offset + pnf + 21] < 0xF0) {
 					sample.rbt = data[offset + pnf + 21];
 					if (callback) callback (DC_SAMPLE_RBT, &sample, userdata);
+				}
+			}
+
+			if (nsamples == 1 || nsamples == parser->nsamples) {
+				unsigned int record = nsamples == 1 ? parser->opening[9] : parser->closing[9];
+				if (record != UNDEFINED && parser->logversion >= 17) {
+					unsigned int gnss = data[record + 16];
+					int latitude  = (signed int) array_uint32_be (data + record + 21);
+					int longitude = (signed int) array_uint32_be (data + record + 25);
+					if (gnss == GNSS_FIX_2D || gnss == GNSS_FIX_3D) {
+						sample.location.latitude  = latitude  / 100000.0;
+						sample.location.longitude = longitude / 100000.0;
+						sample.location.altitude  = 0.0;
+						if (callback) callback (DC_SAMPLE_LOCATION, &sample, userdata);
+					}
 				}
 			}
 		} else if (type == LOG_RECORD_DIVE_SAMPLE_EXT) {

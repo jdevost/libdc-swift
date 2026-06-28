@@ -345,6 +345,20 @@ public class GenericParser {
                     tts: value.deco.tts
                 )
                 
+            case DC_SAMPLE_LOCATION:
+                let fix = DiveData.Location(
+                    latitude: value.location.latitude,
+                    longitude: value.location.longitude,
+                    altitude: value.location.altitude
+                )
+                if wrapper.data.location == nil {
+                    // First fix = entry GPS
+                    wrapper.data.location = fix
+                } else {
+                    // Subsequent fixes update the exit GPS (last wins)
+                    wrapper.data.exitLocation = fix
+                }
+
             case DC_SAMPLE_GASMIX:
                 let gasMixUnknown = Int(UInt32.max)
                 let newGasMix = Int(value.gasmix)
@@ -473,15 +487,6 @@ public class GenericParser {
             wrapper.data.tempSurface = tempSurf
         }
 
-        // Get location if available
-        if let location: dc_location_t = getField(parser, type: DC_FIELD_LOCATION) {
-            wrapper.data.location = DiveData.Location(
-                latitude: location.latitude,
-                longitude: location.longitude,
-                altitude: location.altitude
-            )
-        }
-
         // Create date from components
         var dateComponents = DateComponents()
         dateComponents.year = Int(datetime.year)
@@ -518,6 +523,7 @@ public class GenericParser {
             diveMode: diveMode,
             decoModel: wrapper.data.decoModel,
             location: wrapper.data.location,
+            exitLocation: wrapper.data.exitLocation,
             rbt: wrapper.data.rbt,
             heartbeat: wrapper.data.heartbeat,
             bearing: wrapper.data.bearing,
