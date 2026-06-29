@@ -70,7 +70,8 @@
 #define OSTC3_ZHL16_GF 1
 #define OSTC4_VPM      2
 
-#define OSTC4      0x3B
+#define OSTC4      0x43
+#define OSTC5      0x44
 
 #define OSTC4_COMPASS_SET     0x4000
 #define OSTC4_COMPASS_CLEARED 0x8000
@@ -80,6 +81,9 @@
 
 #define OSTC4_GNSS_DUMMY_LATITUDE   8.99f
 #define OSTC4_GNSS_DUMMY_LONGITUDE 47.77f
+
+#define ISHWOS3(hwos,model) ((hwos) && ((model) != OSTC4 && (model) != OSTC5))
+#define ISHWOS4(hwos,model) ((hwos) && ((model) == OSTC4 || (model) == OSTC5))
 
 #define OSTC3FW(major,minor) ( \
 		(((major) & 0xFF) << 8) | \
@@ -138,9 +142,6 @@ typedef struct hw_ostc_parser_t {
 	unsigned int initial_setpoint;
 	unsigned int initial_cns;
 	hw_ostc_gasmix_t gasmix[NGASMIXES];
-	unsigned int have_location;
-	float latitude;
-	float longitude;
 } hw_ostc_parser_t;
 
 static dc_status_t hw_ostc_parser_get_datetime (dc_parser_t *abstract, dc_datetime_t *datetime);
@@ -431,9 +432,6 @@ hw_ostc_parser_create_internal (dc_parser_t **out, dc_context_t *context, const 
 		parser->gasmix[i].active = 0;
 		parser->gasmix[i].diluent = 0;
 	}
-	parser->have_location = 0;
-	parser->latitude = 0.0;
-	parser->longitude = 0.0;
 
 	*out = (dc_parser_t *) parser;
 
@@ -537,7 +535,6 @@ hw_ostc_parser_get_field (dc_parser_t *abstract, dc_field_type_t type, unsigned 
 	dc_gasmix_t *gasmix = (dc_gasmix_t *) value;
 	dc_salinity_t *water = (dc_salinity_t *) value;
 	dc_decomodel_t *decomodel = (dc_decomodel_t *) value;
-	dc_location_t *location = (dc_location_t *) value;
 
 	unsigned int salinity = data[layout->salinity];
 	if (version == 0x23 || version == 0x24)
@@ -705,13 +702,6 @@ hw_ostc_parser_get_field (dc_parser_t *abstract, dc_field_type_t type, unsigned 
 			}
 			decomodel->conservatism = 0;
 			break;
-		case DC_FIELD_LOCATION:
-			if (!parser->have_location)
-				return DC_STATUS_UNSUPPORTED;
-			location->latitude  = parser->latitude;
-			location->longitude = parser->longitude;
-			location->altitude  = 0.0;
-			break;
 		default:
 			return DC_STATUS_UNSUPPORTED;
 		}
@@ -818,7 +808,7 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 
 	// Get the firmware version.
 	unsigned int firmware = 0;
-	if (parser->model == OSTC4) {
+	if (ISHWOS4(parser->hwos, parser->model)) {
 		firmware = array_uint16_le (data + layout->firmware);
 		DEBUG (abstract->context, "Device: firmware=%u (%u.%u.%u.%u)",
 			firmware,
@@ -979,7 +969,7 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 				return DC_STATUS_DATAFORMAT;
 			}
 			unsigned int id = data[offset];
-			if (parser->model == OSTC4 && ccr && id > parser->nfixed) {
+			if (ISHWOS4(parser->hwos, parser->model) && ccr && id > parser->nfixed) {
 				// Fix the OSTC4 diluent index.
 				id -= parser->nfixed;
 			}
@@ -1071,13 +1061,10 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 
 				if (latitude != OSTC4_GNSS_DUMMY_LATITUDE ||
 					longitude != OSTC4_GNSS_DUMMY_LONGITUDE) {
-					if (!parser->have_location) {
-						parser->latitude  = latitude;
-						parser->longitude = longitude;
-						parser->have_location = 1;
-					} else {
-						WARNING (abstract->context, "Multiple GNSS locations present.");
-					}
+					sample.location.latitude  = latitude;
+					sample.location.longitude = longitude;
+					sample.location.altitude  = 0.0;
+					if (callback) callback (DC_SAMPLE_LOCATION, &sample, userdata);
 				}
 
 				offset += 8;
@@ -1107,7 +1094,7 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 					// the hwOS Sport firmware v10.57 to v10.63, the ppO2 divisor
 					// is sometimes not correctly reset to zero when no ppO2
 					// samples are being recorded.
-					if (info[i].type == PPO2 && parser->hwos && parser->model != OSTC4 &&
+					if (info[i].type == PPO2 && ISHWOS3(parser->hwos, parser->model) &&
 						((firmware >= OSTC3FW(3,3) && firmware <= OSTC3FW(3,8)) ||
 						(firmware >= OSTC3FW(10,57) && firmware <= OSTC3FW(10,63)))) {
 						WARNING (abstract->context, "Reset invalid ppO2 divisor to zero.");
@@ -1130,7 +1117,7 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 				case DECO:
 					// Due to a firmware bug, the deco/ndl info is incorrect for
 					// all OSTC4 dives with a firmware older than version 1.0.8.
-					if (parser->model == OSTC4 && firmware < OSTC4FW(1,0,8,0))
+					if (ISHWOS4(parser->hwos, parser->model) && firmware < OSTC4FW(1,0,8,0))
 						break;
 					if (data[offset]) {
 						sample.deco.type = DC_DECO_DECOSTOP;
@@ -1175,7 +1162,7 @@ hw_ostc_parser_internal_foreach (hw_ostc_parser_t *parser, dc_sample_callback_t 
 						sample.pressure.value = value;
 						// The hwOS Sport firmware used a resolution of
 						// 0.1 bar between versions 10.40 and 10.50.
-						if (parser->hwos && parser->model != OSTC4 &&
+						if (ISHWOS3(parser->hwos, parser->model) &&
 							(firmware >= OSTC3FW(10,40) && firmware <= OSTC3FW(10,50))) {
 							sample.pressure.value /= 10.0;
 						}

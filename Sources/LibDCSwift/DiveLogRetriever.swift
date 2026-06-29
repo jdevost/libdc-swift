@@ -153,11 +153,12 @@ public class DiveLogRetriever {
             // Attach the fingerprint so callers can persist it without touching UserDefaults
             diveData.fingerprint = fingerprintData
 
+            let countSnapshot = context.logCount
             DispatchQueue.main.async {
                 context.viewModel.appendDives([diveData])
-                context.viewModel.updateProgress(count: context.logCount)
+                context.viewModel.updateProgress(count: countSnapshot)
             }
-            
+
             context.hasNewDives = true
             context.logCount += 1
             return 1  

@@ -18,10 +18,26 @@ public enum LogLevel: Int {
     }
 }
 
+/// A single log event forwarded to `Logger.onLog` so a host app can relay it to an external
+/// system (e.g. Sentry breadcrumbs/events). libdc-swift never transmits anything itself.
+public struct LogEvent {
+    public let level: LogLevel
+    public let message: String
+    public let category: String   // originating source file, e.g. "BLEManager.swift"
+    public let function: String
+    public let timestamp: Date
+}
+
 public class Logger {
     public static let shared = Logger()
     private var isEnabled = true
     private var minLevel: LogLevel = .debug
+
+    /// Optional sink invoked for every log event at or above `minimumLogLevel`. Set this once from
+    /// the host app to forward diagnostics to Sentry or another telemetry service. The closure may
+    /// be called from background threads, so the handler must be thread-safe. libdc-swift performs
+    /// no network/telemetry of its own.
+    public var onLog: ((LogEvent) -> Void)?
     public var shouldShowRawData = false  // Toggle for full hex dumps
     private var dataCounter = 0  // Track number of data packets
     private var totalBytesReceived = 0  // Track total bytes
@@ -48,11 +64,14 @@ public class Logger {
     
     public func log(_ message: String, level: LogLevel = .debug, file: String = #file, function: String = #function) {
         guard level.rawValue >= minLevel.rawValue else { return }
-        
-        let timestamp = dateFormatter.string(from: Date())
+
+        let now = Date()
+        let timestamp = dateFormatter.string(from: now)
         let fileName = (file as NSString).lastPathComponent
-        
+
         print("\(level.prefix) [\(timestamp)] [\(fileName)] \(message)")
+
+        onLog?(LogEvent(level: level, message: message, category: fileName, function: function, timestamp: now))
     }
     
     /// Enables debug mode: sets Swift log level to .debug and libdivecomputer

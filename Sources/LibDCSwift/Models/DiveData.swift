@@ -254,7 +254,8 @@ public struct DiveData: Identifiable {
     public var decoModel: DecoModel?
     
     // Location data
-    public var location: Location?
+    public var location: Location?      // GPS entry location (first fix)
+    public var exitLocation: Location?  // GPS exit location (last of 2+ fixes; nil if only one fix recorded)
     
     // Additional sensor data
     public var rbt: UInt32?
@@ -414,6 +415,7 @@ public struct DiveData: Identifiable {
         diveMode: DiveMode?,
         decoModel: DecoModel?,
         location: Location?,
+        exitLocation: Location? = nil,
         rbt: UInt32?,
         heartbeat: UInt32?,
         bearing: UInt32?,
@@ -444,6 +446,7 @@ public struct DiveData: Identifiable {
         self.diveMode = diveMode
         self.decoModel = decoModel
         self.location = location
+        self.exitLocation = exitLocation
         self.rbt = rbt
         self.heartbeat = heartbeat
         self.bearing = bearing

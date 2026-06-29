@@ -345,8 +345,66 @@ public class GenericParser {
                     tts: value.deco.tts
                 )
                 
+            case DC_SAMPLE_LOCATION:
+                let fix = DiveData.Location(
+                    latitude: value.location.latitude,
+                    longitude: value.location.longitude,
+                    altitude: value.location.altitude
+                )
+                if wrapper.data.location == nil {
+                    // First fix = entry GPS
+                    wrapper.data.location = fix
+                } else {
+                    // Subsequent fixes update the exit GPS (last wins)
+                    wrapper.data.exitLocation = fix
+                }
+
             case DC_SAMPLE_GASMIX:
-                wrapper.data.gasmix = Int(value.gasmix)
+                let gasMixUnknown = Int(UInt32.max)
+                let newGasMix = Int(value.gasmix)
+                // Synthesize a gasChange event when the active gas mix changes.
+                // Skip DC_GASMIX_UNKNOWN (0xFFFFFFFF) which Shearwater sends for tanks without AI transmitters.
+                if newGasMix != gasMixUnknown,
+                   let previousGas = wrapper.data.gasmix,
+                   newGasMix != previousGas {
+                    // Dedup: some computers emit both SAMPLE_EVENT_GASCHANGE and DC_SAMPLE_GASMIX
+                    // at the same timestamp. If the previous synthesized point at this time already
+                    // carries a .gasChange event, skip — it has already been covered.
+                    let alreadyHasGasChangeAtThisTime =
+                        wrapper.data.profile.last?.time == wrapper.data.time &&
+                        wrapper.data.profile.last?.events.contains(.gasChange) == true
+                    if !alreadyHasGasChangeAtThisTime {
+                        let ndl = wrapper.data.deco?.type == DC_DECO_NDL ? wrapper.data.deco?.time : nil
+                        let decoStop = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.depth : nil
+                        let decoTime = wrapper.data.deco?.type == DC_DECO_DECOSTOP ? wrapper.data.deco?.time : nil
+                        let tts = wrapper.data.deco?.tts
+                        let point = DiveProfilePoint(
+                            time: wrapper.data.time,
+                            depth: wrapper.data.depth,
+                            temperature: wrapper.data.temperature,
+                            pressure: wrapper.data.pressure.last?.value,
+                            pressures: wrapper.data.currentPressures,
+                            po2: wrapper.data.ppo2.last?.value,
+                            events: [.gasChange],
+                            ndl: ndl,
+                            decoStop: decoStop,
+                            decoTime: decoTime,
+                            tts: tts,
+                            currentGas: newGasMix,
+                            cns: wrapper.data.cns,
+                            rbt: wrapper.data.rbt,
+                            heartbeat: wrapper.data.heartbeat,
+                            bearing: wrapper.data.bearing,
+                            setpoint: wrapper.data.setpoint
+                        )
+                        wrapper.data.profile.append(point)
+                    }
+                }
+                // Only update the previous-gas tracker when the new mix is real —
+                // don't poison it with DC_GASMIX_UNKNOWN.
+                if newGasMix != gasMixUnknown {
+                    wrapper.data.gasmix = newGasMix
+                }
                 
             default:
                 break
@@ -429,15 +487,6 @@ public class GenericParser {
             wrapper.data.tempSurface = tempSurf
         }
 
-        // Get location if available
-        if let location: dc_location_t = getField(parser, type: DC_FIELD_LOCATION) {
-            wrapper.data.location = DiveData.Location(
-                latitude: location.latitude,
-                longitude: location.longitude,
-                altitude: location.altitude
-            )
-        }
-
         // Create date from components
         var dateComponents = DateComponents()
         dateComponents.year = Int(datetime.year)
@@ -474,6 +523,7 @@ public class GenericParser {
             diveMode: diveMode,
             decoModel: wrapper.data.decoModel,
             location: wrapper.data.location,
+            exitLocation: wrapper.data.exitLocation,
             rbt: wrapper.data.rbt,
             heartbeat: wrapper.data.heartbeat,
             bearing: wrapper.data.bearing,
