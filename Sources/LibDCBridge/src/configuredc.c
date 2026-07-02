@@ -531,6 +531,7 @@ static const struct name_pattern name_patterns[] = {
     // Shearwater dive computers
     { "Predator", "Shearwater", "Predator", MATCH_EXACT },
     { "Perdix 2", "Shearwater", "Perdix 2", MATCH_EXACT },
+    { "Perdix 3", "Shearwater", "Perdix 3", MATCH_EXACT },
     { "Petrel 3", "Shearwater", "Petrel 3", MATCH_EXACT },
     { "Petrel", "Shearwater", "Petrel 2", MATCH_EXACT },  // Both Petrel and Petrel 2 identify as "Petrel"
     { "Perdix", "Shearwater", "Perdix", MATCH_EXACT },
