@@ -45,3 +45,8 @@ After updating the C library, check `descriptor.c` for new or changed entries an
   - `DeviceFamily` enum: add a case for each new `DC_FAMILY_*` constant, with matching `asDCFamily` and `init?(dcFamily:)` entries.
   - `knownServiceUUIDs`: add the BLE service UUID (must match the entry in `knownSerialServices`).
   - `bleNamePrefixes`: for families where the C BLE filter covers multiple models, add prefix entries ordered most-specific-first. Verify the prefix string against the `dc_filter_*` function in `descriptor.c` — it must match the actual BLE advertisement name, not just the display name.
+- **`BlueDive/Assets.xcassets/DeviceIcons/`** — add a product image imageset for each new device:
+  - Create a folder named `DeviceIcon_<SanitisedModelName>.imageset/` where `<SanitisedModelName>` is derived the same way as `DiveComputerIconView.modelLevelAssetName(_:)`: replace spaces and non-alphanumeric characters with `_`, collapse consecutive separators, and join with `_`. Example: `"Shearwater Perdix 2"` → `DeviceIcon_Shearwater_Perdix_2`.
+  - Place a 132 × 132 px PNG (44 pt @ 3×) with a transparent background inside the folder.
+  - Add a `Contents.json` referencing the PNG as a single universal image (see any existing imageset for the template).
+  - If no product image is available, skip the imageset — the icon resolver falls back to the brand-level asset automatically.
