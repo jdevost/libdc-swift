@@ -33,6 +33,7 @@ import LibDCBridge
         ComputerModel(name: "Shearwater Perdix", family: .shearwaterPetrel, modelID: 5),
         ComputerModel(name: "Shearwater Perdix AI", family: .shearwaterPetrel, modelID: 6),
         ComputerModel(name: "Shearwater Perdix 2", family: .shearwaterPetrel, modelID: 11),
+        ComputerModel(name: "Shearwater Perdix 3", family: .shearwaterPetrel, modelID: 14),
         ComputerModel(name: "Shearwater Teric", family: .shearwaterPetrel, modelID: 8),
         ComputerModel(name: "Shearwater Tern", family: .shearwaterPetrel, modelID: 12),
         ComputerModel(name: "Shearwater NERD 2", family: .shearwaterPetrel, modelID: 7),
